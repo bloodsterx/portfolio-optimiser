@@ -1,4 +1,3 @@
-from model import MLPModel as model
 import torch.nn as nn
 import torch
 
@@ -53,7 +52,7 @@ def train(
             loss = loss_fn(c_hat, C_batch)
 
             # 3. clear old gradients
-            optimizer.zero_grad()
+            optimizer.zero_grad()  
 
             # 4. backprop
             loss.backwards() # traverse backprop graph and recomputes gradients for each node
@@ -65,7 +64,7 @@ def train(
                 f"Epoch [{epoch}]: cumulative loss={cum_loss}"
             )
     
-    return model
+    return model, output
 
 
    
