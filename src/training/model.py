@@ -8,15 +8,15 @@ class MLPModel(nn.module):
 
         # build list of linear layers based on h_layers  
         layers = []
-        input_layer = d_features
+        input_dim = d_features
         
         for hidden_layer in h_layers:
-            layers.append(nn.Linear(in_features=input_layer, out_features=hidden_layer))
+            layers.append(nn.Linear(in_features=input_dim, out_features=hidden_layer))
             # for now, just ReLU. Consider LSTM later.
             layers.append(nn.ReLU())
-            input_layer = hidden_layer
+            input_dim = hidden_layer
 
-        layers.append(nn.Linear(in_features=input_layer, out_features=n_assets))
+        layers.append(nn.Linear(in_features=input_dim, out_features=n_assets))
 
         self.net = nn.Sequential(*layers)
 
