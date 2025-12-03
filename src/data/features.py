@@ -121,7 +121,6 @@ class Features:
                                           how="left")
         
         # Calculate rolling beta for each asset: beta = cov(asset, bench) / var(bench)
-        # Rolling cov(X,Y) = E[XY] - E[X]E[Y]
         result = data_with_bench.select(
             pl.col(self.date_col),
             *[
