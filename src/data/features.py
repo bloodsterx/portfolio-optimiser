@@ -16,7 +16,14 @@ Iteration 1 indicators
 - 12m realised vol
 - rolling market beta
 
-no liquidity measures... How to do that for ff30 without microstructure data?
+no liquidity measures... How to do that for ff49 without microstructure data?
+
+Stuff to test
+- lagged IV instead of realised. Thought process: investors do not make decisions based off of realized volatility (unobservable). 
+IV is observable from option market flows and dynamics. Investors actually use IV as a forward looking measure of vol, so it should be more relevant
+as a feature
+- GARCH
+
 """
 
 class Features:
@@ -49,53 +56,91 @@ class Features:
                 pass
             case _:
                 print(f"{'='*10} Exception Here {'='*10}")
+                print("Units must be either d, w, m or y")
+                return
 
         result = self.data.select(
             pl.col(self.date_col),
             *[
                 (
-                    pl.col(col).shift(1).log1p()
-                    .rolling_sum(window_size=window)
-                    .exp() - 1.0
-                )
-                .alias(f"{col}_mom{window}{units}") # just need to shift 1 month to apply lag
+                    pl.col(col).shift(1).log1p() # just need to shift 1 month to apply lag
+                    .rolling_sum(window_size=window-1) # includes current row and previous 11 rows = 12 rows
+                    .exp() - 1.0 # sum logs then exponentiate to avoid under/overflow
+                ).alias(f"{col}_mom{window}{units.lower()}") 
                 for col in self.asset_cols
             ]
         )
         return result
+
+    def volatility(self, window, units="m") -> pl.DataFrame:
+        match units.lower():
+            case "d" | "w" | "m" | "y":
+                pass
+            case _:
+                print(f"{'='*10} Exception Here {'='*10}")
+                print("Units must be either d, w, m or y")
+                return
         
-    def mom1m(self) -> pl.DataFrame:
-        """
-        Returns a matrix of lagged-1m stock returns
-        """
         result = self.data.select(
             pl.col(self.date_col),
             *[
                 (
                     pl.col(col).shift(1).log1p()
-                    .rolling_sum(window_size=)
-                )
-                .alias(f"{col}_mom1m") # just need to shift 1 month to apply lag
+                    .rolling_var(window_size=window-1)
+                    .exp() - 1.0
+                ).alias(f"{col}_realvol{window}{units.lower()}")
                 for col in self.asset_cols
             ]
         )
-        return result
-    
-    def mom12m(self) -> pl.DataFrame:
-        """
-        Returns a matrix of 1m-lagged, 12m momentum (12-1 momentum strategy)
-        """
-        result = self.data.select(
-            self.date_col,
-            *[
-                (
-                    pl.col(col).shift(1).log1p() # sum logs then exponentiate to avoid under/overflow
-                    .rolling_sum(window_size=11) # includes current row and previous 11 rows = 12 rows
-                    .exp() - 1.0
-                ).alias(f"{col}_mom12m")
-                for col in self.asset_cols 
-            ]
-        )
+
         return result
 
-    def vol3m(self)
+    def beta(self, window, bench: pl.DataFrame, bench_col: str = "benchmark", units="m") -> pl.DataFrame:
+        """Calculates the rolling beta of asset to benchmark. Defaults to market portfolio proxy (FF49)
+
+        Args:
+            window (int): interval over which to calculate beta. Units in terms of input data.
+            bench (pl.DataFrame): benchmark to calculate beta against. Should have columns [Date, benchmark_col]
+            bench_col (str): name of the benchmark return column. Defaults to "benchmark".
+            units (str, optional): (d, w, m, y). Defaults to "m".
+        
+        Returns:
+            DataFrame with Date and beta columns for each asset, lagged by 1 period
+        """
+        match units.lower():
+            case "d" | "w" | "m" | "y":
+                pass
+            case _:
+                print(f"{'='*10} Exception Here {'='*10}")
+                print("Units must be either d, w, m or y")
+                return
+        
+        # join bench and data. ASSUMES NO CODING ERRORS. TODO: clean data before calculating 
+        data_with_bench = self.data.join(bench.select(pl.col(self.date_col), pl.col(bench_col)), 
+                                          on=self.date_col, 
+                                          how="left")
+        
+        # Calculate rolling beta for each asset: beta = cov(asset, bench) / var(bench)
+        # Rolling cov(X,Y) = E[XY] - E[X]E[Y]
+        result = data_with_bench.select(
+            pl.col(self.date_col),
+            *[
+                (
+
+                    # Rolling covariance: E[XY] - E[X]E[Y]
+                    (
+                        (pl.col(col).shift(1) * pl.col(bench_col).shift(1))
+                        .rolling_mean(window_size=window)
+                        - 
+                        (pl.col(col).shift(1).rolling_mean(window_size=window) * 
+                         pl.col(bench_col).shift(1).rolling_mean(window_size=window))
+                    )
+                    / 
+                    # Divide by rolling variance of lagged benchmark
+                    pl.col(bench_col).shift(1).rolling_var(window_size=window)
+                ).alias(f"{col}_beta{window}{units.lower()}")
+                for col in self.asset_cols
+            ]
+        )
+        
+        return result
