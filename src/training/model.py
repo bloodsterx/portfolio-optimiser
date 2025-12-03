@@ -1,5 +1,13 @@
 import torch.nn as nn
 
+"""
+Long term TODO:
+- Create model using LSTM dropout layers
+- Create random forest model
+- Create model using causal convolutions (need to read more)
+- Create model using Attention & Transformers (kelly did a paper on this I think)
+"""
+
 class MLPModel(nn.module):
     def __init__(self, d_features, n_assets, *h_layers):
         # (i, h_layers[i]) = i'th hidden layer and the number of neurons in that layer 
