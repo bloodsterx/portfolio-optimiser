@@ -1,39 +1,98 @@
+import torch
 import numpy as np
+import cvxpy as cp
 
-def MVO(ret: np.ndarray, cov: np.ndarray, A: float, rf: float, constraints: list[str] = [""]):
+class MVO:
     """
-    Perform Mean-Variance Optimization (MVO) with a risk-free asset.
+    Markowitz oracle
 
-    Computes the optimal portfolio weights for risky assets that maximize expected utility:
-        U(w) = w.T @ μ - (A/2) * w.T @ Σ @ w
-    
-    With a risk-free asset available, the closed-form solution is:
-        w* = (1/A) * Σ^(-1) @ (μ - rf·1)
+    Given cost vector c (shape B x N), uses
+        mu = -c
+        w_raw ∝ Σ^{-1} mu (w = A^{-1}*Σ^{-1}*mu => w propto invSigma @ mu)
+    and normalises rows to sum to 1
 
-    Args:
-        ret (np.ndarray): Expected returns vector for risky assets, shape (n_assets,)
-        cov (np.ndarray): Covariance matrix of risky asset returns, shape (n_assets, n_assets)
-        A (float): Risk aversion coefficient (A > 0). Higher values indicate greater risk aversion.
-        rf (float): Risk-free rate of return.
-        constraints (list[str]): List of constraint strings (not yet implemented).
+    Optional constraint (to be changed later for more flexibility): long only
 
-    Returns:
-        np.ndarray: Optimal weights for risky assets, shape (n_assets,). 
-                    Weights may not sum to 1; remainder should be invested in risk-free asset.
-                    If sum(w*) > 1, this implies borrowing at the risk-free rate (leverage).
+    Covariance matrix should be regularised with LW or with a small ridge before passing into oracle
+    Future:
+    - allow for time-varying Cov. GARCH? MixtureOfExperts forests which classify regimes and provide different covariance estiamtes for each regime
 
-    Notes:
-        - Current implementation assumes no constraints (e.g., allows short selling).
-        - Constraints parameter is a placeholder for future implementation.
-        - The formula assumes the covariance matrix is invertible (positive definite).
     """
-    
-    # ignore constraints for now, later implement a constraint parser
-    # which reads in constraints as strings... Or maybe a dictionary... figure out a DS
+    def __init__(
+        self,
+        cov: torch.Tensor,
+        risk_av: float = 1.0,
+        rf: float = 0.0,
+        long_only: bool = True, # to be changed for more constraints
+        device: str = "cpu",
+        # constraints
+    ):
+        if device == "cuda" and not torch.cuda.is_available():
+            print("cuda not available")
+            device = "cpu"
+        
+        self.device = torch.device(device)
+        self.cov = cov.to(device) # caller must pass in LW-shrunk covariance
+        self.risk_av = risk_av
+        self.rf = rf
+        self.long_only = long_only
 
-    return np.pow(A, -1) * np.linalg.inv(cov)@(ret - np.ones_like(ret) * rf)
+        self.cov_np = cov.cpu().numpy()
+        self.n_assets = self.cov_np.shape[0]
+
+    def __call__(self, C: torch.Tensor) -> torch.Tensor:
+        """
+        for i in range batch
+
+        get the i'th expected return (-C_np[i])
+
+        Define the optimisation variable (optim over weights 'w')
+
+        setup the optimisation problem:
+        - variance = cp.quad_form
+        - portfolio return = mu @ w
+        - objective = minimise (-(mu@w - 0.5Aw@Sigma@wT))
+        - constraints = [cp.sum(variable) = 1,w >= 0]
+
+        define the problem cp.Problem()
 
 
+        """
+        C_np = C.detach().cpu().numpy() # detach since cvxpy doesn't work with tensors
+        batch_size = C_np.shape[0]
 
+        W_batch = np.zeros_like(C_np)
+        # TODO: super inefficient, can we do batch optimisation or use threads?
+        for i in range(batch_size):
+            mu = C_np[i] # N x 1 (expected return vector)
+            w = cp.Variable(self.n_assets) 
 
-    
+            p_var = cp.quad_form(w, self.cov_np)
+            p_ret = w@mu
+            objective = cp.Minimize((0.5*self.risk_av)*p_var - p_ret)
+            constraints = [
+                w.sum() == 1,
+                # TODO: add more based on user input
+            ]
+
+            if self.long_only:
+                constraints.append(w >= 0)
+
+            problem = cp.Problem(objective, constraints)
+
+            try:
+                problem.solve(solver=cp.ECOS) # if accuracy shite, use MOSEK? If MOSEK too slow, do batch optim
+
+                if problem.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
+                    W_batch[i] = w.value
+
+                else:
+                    print(f"Optimisation failed for sample {i} with status {problem.status}")
+                    W_batch[i] = np.ones(self.n_assets) / self.n_assets # equal weight fallback
+
+            except Exception as e:
+                print(f"Error solving optimisation failed for sample {i}: {e}")
+                W_batch[i] = np.ones(self.n_assets) / self.n_assets # equal weight fallback
+        
+        W_torch = torch.tensor(W_batch, dtype=C.dtype, device=self.device)
+        return W_torch
