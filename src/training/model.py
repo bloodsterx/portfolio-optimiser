@@ -8,7 +8,7 @@ Long term TODO:
 - Create model using Attention & Transformers (kelly did a paper on this I think)
 """
 
-class MLPModel(nn.module):
+class MLPModel(nn.Module):
     def __init__(self, d_features, n_assets, *h_layers):
         # (i, h_layers[i]) = i'th hidden layer and the number of neurons in that layer 
         assert all(isinstance(x, int) for x in h_layers)
