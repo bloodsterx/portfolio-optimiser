@@ -1,2 +1,4 @@
 Empirical Asset Pricing via Machine Learning (Gu et. al, 2020) https://academic.oup.com/rfs/article/33/5/2223/5758276?utm_source=chatgpt.com&login=false
 Smart "Predict, then Optimize" (Elmachtoub & Grigas, 2020) https://arxiv.org/abs/1710.08005
+https://arxiv.org/html/2401.02601v1
+https://onlinelibrary.wiley.com/doi/pdf/10.1002/jae.842
