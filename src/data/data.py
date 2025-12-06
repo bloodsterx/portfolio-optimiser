@@ -12,8 +12,6 @@ class CustomDataset():
 
     def get_bench_data(self, bench):
         return self.bench_data_files.get(bench)
-    
-
 
 
 class CostDataset(Dataset):
