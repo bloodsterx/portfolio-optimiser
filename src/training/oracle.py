@@ -25,6 +25,7 @@ class MVO:
         rf: float = 0.0,
         long_only: bool = True, # to be changed for more constraints
         device: str = "cpu",
+        solver: str = "ECOS" # TODO
         # constraints
     ):
         if device == "cuda" and not torch.cuda.is_available():
