@@ -47,7 +47,7 @@ class DataExtractor:
 class CustomDataset:
     """Manages and stores extracted market data"""
     
-    def __init__(self, data_dir: str = None, data_file: str = None, *bench_data_files: str):
+    def __init__(self, data: pl.DataFrame = None, data_dir: str = None, data_file: str = None, *bench_data_files: str):
         """
         Initialize dataset with optional CSV files
         
@@ -56,7 +56,8 @@ class CustomDataset:
             data_file: Main data file name
             bench_data_files: Benchmark data file names
         """
-        self.data = None
+        # TODO: do we need to classify different datasets? Incl. a name attribute?
+        self.data = data
         self.bench_data = {}
         
         # Load from CSV if paths provided
@@ -66,15 +67,35 @@ class CustomDataset:
                 bench: pl.read_csv(Path(data_dir) / bench) 
                 for bench in bench_data_files
             }
+        
+        # Initialize returns (computed lazily when needed)
+        self._returns = None
+        self._compute_returns()
+    
+    def _compute_returns(self):
+        """Compute returns from price data"""
+        if self.data is None:
+            self._returns = None
+            return
+        
+        # TODO: handle NaNs, synchronise trading days
+        self.returns = self.data.with_columns(
+            pl.col(col).pct_change() for col in self.assets[1:] # assumes the Date column is the first
+        )
     
     def set_data(self, data):
-        """Store extracted data"""
+        """Store extracted data and recompute returns"""
         self.data = data
+        self._compute_returns()
         return self
     
     def get_data(self):
-        """Get stored data"""
+        """Get stored price data"""
         return self.data
+    
+    def get_returns(self):
+        """Get returns matrix (T x N)"""
+        return self._returns
     
     def get_bench_data(self, bench: str):
         """Get benchmark data by name"""
