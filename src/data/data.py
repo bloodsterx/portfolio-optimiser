@@ -69,8 +69,7 @@ class CustomDataset:
             }
         
         # Initialize returns (computed lazily when needed)
-        self._returns = None
-        self._compute_returns()
+        self.set_data(None)
     
     def _compute_returns(self):
         """Compute returns from price data"""
@@ -104,13 +103,15 @@ class CustomDataset:
 class CostDataset(Dataset):
     # for internal usage; DataLoader wraps me, used for readability, clean code and also multithreading is easy
 
-    def __init__(self, X, C):
+    def __init__(self, X, C, cov, rf):
         self.X = X # shape = (T-1, d_features) for T-1 time period
         self.C = C # shape = (T-1, n_assets) -> actual returns 'costs'
+        self.cov = cov
+        self.rf = rf
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
         # retrieve one data sample
-        return self.X[idx], self.C[idx]
+        return self.X[idx], self.C[idx], self.cov, self.rf

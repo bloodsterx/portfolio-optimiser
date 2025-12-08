@@ -20,10 +20,8 @@ class MVO:
     """
     def __init__(
         self,
-        cov: torch.Tensor,
         risk_av: float = 1.0,
-        rf: float = 0.0,
-        long_only: bool = True, # to be changed for more constraints
+        long_only: bool = True,
         device: str = "cpu",
         solver: str = "ECOS" # TODO
         # constraints
@@ -33,17 +31,13 @@ class MVO:
             device = "cpu"
         
         self.device = torch.device(device)
-        self.cov = cov.to(device) # caller must pass in LW-shrunk covariance
         self.risk_av = risk_av
-        self.rf = rf
         self.long_only = long_only
+        self.solver = solver
 
-        self.cov_np = cov.cpu().numpy()
-        self.n_assets = self.cov_np.shape[0]
-
-    def __call__(self, C: torch.Tensor) -> torch.Tensor:
+    def __call__(self, C: torch.Tensor, cov: torch.Tensor, rf: float = 0.0) -> torch.Tensor:
         """
-        for i in range batch
+         for i in range batch
 
         get the i'th expected return (-C_np[i])
 
@@ -56,21 +50,32 @@ class MVO:
         - constraints = [cp.sum(variable) = 1,w >= 0]
 
         define the problem cp.Problem()
-
-
+        Solve portfolio optimization for a batch of expected returns.
+        
+        Args:
+            C: Expected returns tensor (B x N)
+            cov: Covariance matrix (N x N), supports time-varying covariance
+            rf: Risk-free rate (scalar or tensor), supports time-varying rf
+        
+        Returns:
+            W: Optimal portfolio weights (B x N)
         """
+        # Move cov to device and convert to numpy
         C_np = C.detach().cpu().numpy() # detach since cvxpy doesn't work with tensors
+        cov_np = cov.detach().cpu().numpy()
+        n_assets = cov.shape[0]
+        
         batch_size = C_np.shape[0]
 
         W_batch = np.zeros_like(C_np)
         # TODO: super inefficient, can we do batch optimisation or use threads?
         for i in range(batch_size):
-            mu = C_np[i] # N x 1 (expected return vector)
-            w = cp.Variable(self.n_assets) 
+            mu = C_np[i]  # N x 1 (expected return vector)
+            w = cp.Variable(n_assets) 
 
-            p_var = cp.quad_form(w, self.cov_np)
-            p_ret = w@mu
-            objective = cp.Minimize((0.5*self.risk_av)*p_var - p_ret)
+            p_var = cp.quad_form(w, cov_np)
+            p_ret = w @ mu
+            objective = cp.Minimize((0.5 * self.risk_av) * p_var - p_ret)
             constraints = [
                 w.sum() == 1,
                 # TODO: add more based on user input
@@ -82,18 +87,19 @@ class MVO:
             problem = cp.Problem(objective, constraints)
 
             try:
-                problem.solve(solver=cp.ECOS) # if accuracy shite, use MOSEK? If MOSEK too slow, do batch optim
+                problem.solve(solver=self.solver)
 
                 if problem.status in [cp.OPTIMAL, cp.OPTIMAL_INACCURATE]:
                     W_batch[i] = w.value
 
                 else:
-                    print(f"Optimisation failed for sample {i} with status {problem.status}")
-                    W_batch[i] = np.ones(self.n_assets) / self.n_assets # equal weight fallback
+                    print(f"Optimisation failed for sample {i} with status {problem.status}. Fallback to equal weights")
+                    # or should I just abort
+                    W_batch[i] = np.ones(n_assets) / n_assets  # equal weight fallback
 
             except Exception as e:
-                print(f"Error solving optimisation failed for sample {i}: {e}")
-                W_batch[i] = np.ones(self.n_assets) / self.n_assets # equal weight fallback
+                print(f"Error solving optimisation for sample {i}: {e}")
+                W_batch[i] = np.ones(n_assets) / n_assets  # equal weight fallback
         
         W_torch = torch.tensor(W_batch, dtype=C.dtype, device=self.device)
         return W_torch
