@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import numpy as np
 from .loss import SPOPlusLoss
 from .oracle import MVO
 
@@ -15,7 +16,6 @@ class Trainer:
             device = "cpu"
 
         self.model.to(device)
-        
 
     def train(
         self,
@@ -64,16 +64,19 @@ class Trainer:
                 X_batch = X_batch.to(self.device)
                 C_batch = C_batch.to(self.device)
                 Sigma = Sigma.to(self.device)
+
+                # if rf is variable or constant (e.g. using historical US 10 year T-bill )
                 rf = rf.to(self.device) if isinstance(rf, torch.Tensor) else rf
 
                 # 1. forward pass
                 c_hat = self.model(X_batch)
 
                 # 2. Calculate loss (pass Sigma and rf for SPO+)
-                if loss_type == "SPO+":
-                    loss = loss_fn(c_hat, C_batch, Sigma, rf)
-                else:
-                    loss = loss_fn(c_hat, C_batch)
+                match loss_type:
+                    case "SPO+":
+                        loss = loss_fn(c_hat, C_batch, Sigma, rf)
+                    case _:
+                        loss = loss_fn(c_hat, C_batch)
 
                 # 4. clear old gradients
                 optimizer.zero_grad()  
@@ -92,5 +95,37 @@ class Trainer:
         
         return self.model, output
 
+    def split_train_data(self, data: np.ndarray, split: float) -> tuple[np.ndarray]:
+        """Splits time series matrix into train, test and validation sets
+        
+        Uses chronological splitting (no random shuffling) to maintain time series dependencies.
+
+        Args:
+            data (np.ndarray): Time series data matrix (T x N) where T = time periods, N = n_assets
+            split (float): Training data ratio. The remaining data is split equally between val and test.
+
+        Returns:
+            tuple[np.ndarray]: (train_data, val_data, test_data)
+        """
+        if not 0 < split < 1:
+            raise ValueError(f"Split ratio must be between 0 and 1, got {split}")
+        
+        n_samples = len(data)
+        
+        # num. training samples
+        train_partition = int(n_samples * split)
+        
+        # Remaining samples equally split amongst val and test (ie; for all data @ index >= train_partition)
+        remaining = n_samples - train_partition
+        val_size = remaining // 2
+        val_partition = train_partition + val_size
+        
+        train_data = data[:train_partition]
+        val_data = data[train_partition:val_partition]
+        test_data = data[val_partition:]
+        
+        return train_data, val_data, test_data
+
+    
 
 
