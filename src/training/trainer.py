@@ -1,6 +1,10 @@
 import torch.nn as nn
 import torch
 import numpy as np
+import polars as pl
+from torch.utils.data import DataLoader
+from ..data.data import DataExtractor, CostDataset
+from ..data.features import Features
 from .loss import SPOPlusLoss
 from .oracle import MVO
 
@@ -58,7 +62,8 @@ class Trainer:
 
         for epoch in range(n_epochs):
             self.model.train()
-            cum_loss = 0.0
+            train_loss = 0.0
+            n_train_samples = 0
 
             for X_batch, C_batch, Sigma, rf in train_dataloader:
                 # Move all data to device
@@ -122,16 +127,16 @@ class Trainer:
                     val_mse += mse.item() * X_batch.size(0)
 
                     # calc 'regret' (decision quality - cost of choosing port A over B)
-                    w_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
-                    w_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
-
                     w_hat = oracle(c_hat, Sigma, rf)
                     w_true = oracle(C_batch, Sigma, rf)
 
-                    regret = (w_true - w_hat).mean()
-                    _regret += regret.item() * X_batch.size(0)
+                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
+                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
+                    
+                    regret = (util_true - util_hat).mean()
+                    val_regret += regret.item() * X_batch.size(0)
 
-                    n_test_samples += X_batch.size(0)
+                    n_val_samples += X_batch.size(0)
 
             avg_val_loss = val_loss / n_val_samples
             avg_val_mse = val_mse / n_val_samples
@@ -155,7 +160,8 @@ class Trainer:
 
         return self.model, output
 
-    def split_train_data(self, data: np.ndarray, split: float) -> tuple[np.ndarray]:
+    @staticmethod
+    def split_train_data(data: np.ndarray, split: float) -> tuple[np.ndarray]:
         """Splits time series matrix into train, test and validation sets
         
         Uses chronological splitting (no random shuffling) to maintain time series dependencies.
@@ -186,6 +192,108 @@ class Trainer:
         
         return train_data, val_data, test_data
 
+
+def run():
+    # step 1. Extract the features from the data
+    import csv
+    
+    with open("sp500-stocks.csv", "r") as f:
+        reader = csv.reader(f)
+        next(reader)
+        tickers = [row[0].strip() for row in reader if row][:10]
+    
+    print(f"Loaded {len(tickers)} tickers: {tickers[:10]}...")  # Preview first 10
+    
+    extractor = DataExtractor()
+    timeseries = extractor.extract_yfinance(
+        tickers=tickers,
+        period="5y",     
+        interval="1mo"
+    )
+    
+    # reset index column to Date 
+    timeseries_reset = timeseries.reset_index()
+
+    # Convert to polars df
+    timeseries_pl = pl.DataFrame(timeseries_reset)
+    
+    # Is this needed? Rename index column to Date if it isn't already
+    if "Date" not in timeseries_pl.columns:
+        # The index column might be named "index" or the datetime column name
+        date_col_name = timeseries_pl.columns[0]  # First column should be the date
+        timeseries_pl = timeseries_pl.rename({date_col_name: "Date"})
+    
+    # prices -> returns conversion
+    asset_cols = [col for col in timeseries_pl.columns if col != "Date"]
+    returns_pl = timeseries_pl.with_columns([
+        pl.col(col).pct_change().alias(col) for col in asset_cols
+    ])
+
+    # Compute features
+    features = Features(returns_pl)
+    print(features.head())
+    mom1m = features.mom(1)
+    mom12m = features.mom(12)
+    # skip beta for now
+    # rolling_beta1m = features.beta(1, bench_data)
+    # rolling_beta12m = features.beta(12, bench_data)
+    volatility1m = features.volatility(1)
+    volatility12m = features.volatility(12)
+    
+    # Combine all features into a single DataFrame
+    # Start with returns_pl (has Date + all asset returns)
+    combined = returns_pl.clone()
+
+    # Join each feature DataFrame on Date
+    # Each feature DF has Date + feature columns for each asset
+    for feature_df in [mom1m, mom12m, volatility1m, volatility12m]:
+        print(feature_df.head())
+        combined = combined.join(feature_df, on="Date", how="left")
+    
+    combined = combined.drop_nulls()
+    
+    print(f"Combined features shape: {combined.shape}")
+    print(f"Columns: {combined.columns[:10]}...")
+    
+    feature_cols = [col for col in combined.columns 
+                    if col not in ["Date"] + asset_cols]
+
+    X = combined.select(feature_cols).to_numpy()
+    C = combined.select(asset_cols).to_numpy()
+    
+    print(f"X shape: {X.shape}, C shape: {C.shape}")
+
+    # split data
+    X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
+    C_train, C_val, C_test = Trainer.split_train_data(C, 0.7)
+    
+    print(f"Train: X={X_train.shape}, C={C_train.shape}")
+    print(f"Val: X={X_val.shape}, C={C_val.shape}")
+    print(f"Test: X={X_test.shape}, C={C_test.shape}")
+    
+    # TODO: Calculate covariance matrix from training data
+    n_assets = C_train.shape[1]
+    cov_matrix = np.eye(n_assets) * 0.01
+    rf = 0.02
+    X_train_t = torch.tensor(X_train, dtype=torch.float32)
+    C_train_t = torch.tensor(C_train, dtype=torch.float32)
+    X_val_t = torch.tensor(X_val, dtype=torch.float32)
+    C_val_t = torch.tensor(C_val, dtype=torch.float32)
+    cov_t = torch.tensor(cov_matrix, dtype=torch.float32)
+    
+    # setup dataloader objects
+    train_dataset = CostDataset(X_train_t, C_train_t, cov_t, rf)
+    val_dataset = CostDataset(X_val_t, C_val_t, cov_t, rf)
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    
+    print(f"Created dataloaders with {len(train_dataset)} train samples, {len(val_dataset)} val samples")
+
+
+    
+if __name__ == "__main__":
+    run()
     
 
 

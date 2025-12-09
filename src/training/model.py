@@ -2,7 +2,7 @@ import torch.nn as nn
 
 """
 Long term TODO:
-- Create model using LSTM dropout layers
+- Create model using LSTM
 - Create random forest model
 - Create model using causal convolutions (need to read more)
 - Create model using Attention & Transformers (kelly did a paper on this I think)
