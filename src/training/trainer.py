@@ -19,7 +19,8 @@ class Trainer:
 
     def train(
         self,
-        dataloader,
+        train_dataloader,
+        val_dataloader,    
         oracle_typ="MVO",
         optim="adam", 
         n_epochs=100, 
@@ -59,7 +60,7 @@ class Trainer:
             self.model.train()
             cum_loss = 0.0
 
-            for X_batch, C_batch, Sigma, rf in dataloader:
+            for X_batch, C_batch, Sigma, rf in train_dataloader:
                 # Move all data to device
                 X_batch = X_batch.to(self.device)
                 C_batch = C_batch.to(self.device)
@@ -87,46 +88,70 @@ class Trainer:
                 # 5. Update model parameters
                 optimizer.step()
 
-                cum_loss += loss.item() * X_batch.size(0)
+                train_loss += loss.item() * X_batch.size(0)
+                n_train_samples += X_batch.size(0)
+            
+            avg_train_loss = train_loss / n_train_samples
 
             self.model.eval()
-            test_mse = 0.0
-            test_regret = 0.0
-            n_test_samples = 0
+            val_loss = 0.0
+            val_mse = 0.0
+            val_regret = 0.0
+            n_val_samples = 0
 
+            # validation 
             with torch.inference_mode():
-                for X_batch, C_batch, Sigma, rf in dataloader:
+                for X_batch, C_batch, Sigma, rf in val_dataloader:
                     X_batch = X_batch.to(self.device)
                     C_batch = C_batch.to(self.device)
                     Sigma = Sigma.to(self.device)
                     rf = rf.to(self.device) if isinstance(rf, torch.Tensor) else rf
 
                     c_hat = self.model(X_batch)
-                    
+
+                    match loss_type:
+                        case "SPO+":
+                            loss = loss_fn(c_hat, C_batch, Sigma, rf)
+                        case _:
+                            loss = loss_fn(c_hat, C_batch)
+
+                    val_loss += loss.item() * X_batch.size(0)
+
+                    # calc mse-loss
                     mse = ((c_hat - C_batch) ** 2).mean()
-                    test_mse += mse.item() * X_batch.size(0)
+                    val_mse += mse.item() * X_batch.size(0)
+
+                    # calc 'regret' (decision quality - cost of choosing port A over B)
+                    w_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
+                    w_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
 
                     w_hat = oracle(c_hat, Sigma, rf)
                     w_true = oracle(C_batch, Sigma, rf)
 
-                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
-                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
-                    regret = (util_true - util_hat).mean()
-                    test_regret += regret.item() * X_batch.size(0)
+                    regret = (w_true - w_hat).mean()
+                    _regret += regret.item() * X_batch.size(0)
 
                     n_test_samples += X_batch.size(0)
 
-            avg_train_loss = cum_loss / n_test_samples
-            avg_test_mse = test_mse / n_test_samples
-            avg_test_regret = test_regret / n_test_samples
+            avg_val_loss = val_loss / n_val_samples
+            avg_val_mse = val_mse / n_val_samples
+            avg_val_regret = val_regret / n_val_samples
 
             if epoch % 5 == 0:
                 output.append({
                     "epoch": epoch,
-                    "train_loss": avg_train_loss,
-                    "test_mse": avg_test_mse,
-                    "test_regret": avg_test_regret,
+                    "train loss": avg_train_loss,
+                    "val Loss": avg_val_loss,
+                    "val MSE": avg_val_mse,
+                    "val regret": avg_val_regret,
                 })
+
+                print(f"Epoch {epoch:3d} | "
+                    f"train loss: {avg_train_loss:.4f} | "
+                    f"val loss: {avg_val_loss:.4f} | "
+                    f"val MSE: {avg_val_mse:.4f} | "
+                    f"val regret: {avg_val_regret:.4f}")
+
 
         return self.model, output
 
