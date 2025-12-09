@@ -40,7 +40,7 @@ class DataExtractor:
 
     def extract_macro(self):
         """Extract macro economic data"""
-        # TODO: future implementation - pull from DB? 
+        # TODO: FRED. Future implementation idea - pull from DB? 
         pass
 
 
@@ -66,10 +66,10 @@ class CustomDataset:
             self.bench_data = {
                 bench: pl.read_csv(Path(data_dir) / bench) 
                 for bench in bench_data_files
-            }
-        
-        # Initialize returns (computed lazily when needed)
-        self.set_data(None)
+            } 
+        else:
+            # else, initialize returns (computed lazily when needed)  
+            self.set_data(None)
     
     def _compute_returns(self):
         """Compute returns from price data"""

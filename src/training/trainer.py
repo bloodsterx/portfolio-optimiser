@@ -78,21 +78,56 @@ class Trainer:
                     case _:
                         loss = loss_fn(c_hat, C_batch)
 
-                # 4. clear old gradients
+                # 3. clear old gradients
                 optimizer.zero_grad()  
 
                 # 4. Backpropagation: compute gradients
-                loss.backward()  # Fixed typo: backwards -> backward
+                loss.backward()
                 
                 # 5. Update model parameters
                 optimizer.step()
 
                 cum_loss += loss.item() * X_batch.size(0)
 
-                output.append(
-                    f"Epoch [{epoch}]: cumulative loss={cum_loss}"
-                )
-        
+            self.model.eval()
+            test_mse = 0.0
+            test_regret = 0.0
+            n_test_samples = 0
+
+            with torch.inference_mode():
+                for X_batch, C_batch, Sigma, rf in dataloader:
+                    X_batch = X_batch.to(self.device)
+                    C_batch = C_batch.to(self.device)
+                    Sigma = Sigma.to(self.device)
+                    rf = rf.to(self.device) if isinstance(rf, torch.Tensor) else rf
+
+                    c_hat = self.model(X_batch)
+                    
+                    mse = ((c_hat - C_batch) ** 2).mean()
+                    test_mse += mse.item() * X_batch.size(0)
+
+                    w_hat = oracle(c_hat, Sigma, rf)
+                    w_true = oracle(C_batch, Sigma, rf)
+
+                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
+                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
+                    regret = (util_true - util_hat).mean()
+                    test_regret += regret.item() * X_batch.size(0)
+
+                    n_test_samples += X_batch.size(0)
+
+            avg_train_loss = cum_loss / n_test_samples
+            avg_test_mse = test_mse / n_test_samples
+            avg_test_regret = test_regret / n_test_samples
+
+            if epoch % 5 == 0:
+                output.append({
+                    "epoch": epoch,
+                    "train_loss": avg_train_loss,
+                    "test_mse": avg_test_mse,
+                    "test_regret": avg_test_regret,
+                })
+
         return self.model, output
 
     def split_train_data(self, data: np.ndarray, split: float) -> tuple[np.ndarray]:
