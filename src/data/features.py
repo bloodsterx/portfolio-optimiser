@@ -43,13 +43,15 @@ class Features:
 
     def mom(self, window, units="m") -> pl.DataFrame:
         """
-        Returns a matrix of lagged-1m stock returns
+        Returns a matrix of lagged compound returns (momentum)
 
         Args:
             window: int - interval over which to calculate momentum. Units in terms of input data.
-            E.g. window=12 => compounded return over 12 rows. If rows correspond to months, then window=12 => 12 month momentum
-
+            E.g. window=1 => 1-period lagged return, window=12 => compounded return over 12 periods, lagged by 1
             units: (d, w, m, y)
+        
+        Returns:
+            DataFrame with Date and momentum columns for each asset, lagged by 1 period
         """
         match units.lower():
             case "d" | "w" | "m" | "y":
@@ -63,9 +65,12 @@ class Features:
             pl.col(self.date_col),
             *[
                 (
-                    pl.col(col).shift(1).log1p() # just need to shift 1 month to apply lag
-                    .rolling_sum(window_size=window-1) # includes current row and previous 11 rows = 12 rows
-                    .exp() - 1.0 # sum logs then exponentiate to avoid under/overflow
+                    # Compound return = exp(sum(log(1+r))) - 1, applied to rolling window, then lagged
+                    (
+                        pl.col(col).log1p()  # log(1 + return)
+                        .rolling_sum(window_size=window)  # sum over window periods
+                        .exp() - 1.0  # exponentiate and subtract 1 to get compound return
+                    ).shift(1)  # lag by 1 period
                 ).alias(f"{col}_mom{window}{units.lower()}") 
                 for col in self.asset_cols
             ]
@@ -73,6 +78,16 @@ class Features:
         return result
 
     def volatility(self, window, units="m") -> pl.DataFrame:
+        """
+        Calculate rolling realized volatility (standard deviation of returns)
+        
+        Args:
+            window: int - rolling window size for volatility calculation
+            units: (d, w, m, y)
+        
+        Returns:
+            DataFrame with Date and volatility columns for each asset, lagged by 1 period
+        """
         match units.lower():
             case "d" | "w" | "m" | "y":
                 pass
@@ -85,9 +100,9 @@ class Features:
             pl.col(self.date_col),
             *[
                 (
-                    pl.col(col).shift(1).log1p()
-                    .rolling_var(window_size=window-1)
-                    .exp() - 1.0
+                    pl.col(col)
+                    .rolling_std(window_size=window)  # rolling standard deviation of returns
+                    .shift(1)  # lag by 1 period
                 ).alias(f"{col}_realvol{window}{units.lower()}")
                 for col in self.asset_cols
             ]
@@ -125,18 +140,20 @@ class Features:
             pl.col(self.date_col),
             *[
                 (
-
-                    # Rolling covariance: E[XY] - E[X]E[Y]
                     (
-                        (pl.col(col).shift(1) * pl.col(bench_col).shift(1))
-                        .rolling_mean(window_size=window)
-                        - 
-                        (pl.col(col).shift(1).rolling_mean(window_size=window) * 
-                         pl.col(bench_col).shift(1).rolling_mean(window_size=window))
+                        # Rolling covariance: E[XY] - E[X]E[Y]
+                        (
+                            (pl.col(col) * pl.col(bench_col)).rolling_mean(window_size=window)
+                            - 
+                            (pl.col(col).rolling_mean(window_size=window) * 
+                             pl.col(bench_col).rolling_mean(window_size=window))
+                        )
+                        / 
+                        # Divide by rolling variance of benchmark
+                        pl.col(bench_col).rolling_var(window_size=window)
                     )
-                    / 
-                    # Divide by rolling variance of lagged benchmark
-                    pl.col(bench_col).shift(1).rolling_var(window_size=window)
+                    # Lag the entire beta by 1 period
+                    .shift(1)
                 ).alias(f"{col}_beta{window}{units.lower()}")
                 for col in self.asset_cols
             ]
