@@ -11,3 +11,12 @@ dependencies = [
     "torch>=2.9.1",
     "yfinance>=0.2.66",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
