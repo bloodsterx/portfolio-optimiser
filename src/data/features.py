@@ -26,11 +26,12 @@ as a feature
 
 """
 
+
 class Features:
     def __init__(self, data: pl.DataFrame, date_col: str = "Date"):
         """
         Expect a T x N matrix (periods, returns)
-        
+
         Args:
             data: DataFrame with columns [Date, Asset1, Asset2, ..., AssetN]
                   where values are returns (in percentage or decimal)
@@ -49,7 +50,7 @@ class Features:
             window: int - interval over which to calculate momentum. Units in terms of input data.
             E.g. window=1 => 1-period lagged return, window=12 => compounded return over 12 periods, lagged by 1
             units: (d, w, m, y)
-        
+
         Returns:
             DataFrame with Date and momentum columns for each asset, lagged by 1 period
         """
@@ -68,10 +69,11 @@ class Features:
                     # Compound return = exp(sum(log(1+r))) - 1, applied to rolling window, then lagged
                     (
                         pl.col(col).log1p()  # log(1 + return)
-                        .rolling_sum(window_size=window)  # sum over window periods
+                        # sum over window periods
+                        .rolling_sum(window_size=window)
                         .exp() - 1.0  # exponentiate and subtract 1 to get compound return
                     ).shift(1)  # lag by 1 period
-                ).alias(f"{col}_mom{window}{units.lower()}") 
+                ).alias(f"{col}_mom{window}{units.lower()}")
                 for col in self.asset_cols
             ]
         )
@@ -80,11 +82,11 @@ class Features:
     def volatility(self, window, units="m") -> pl.DataFrame:
         """
         Calculate rolling realized volatility (standard deviation of returns)
-        
+
         Args:
             window: int - rolling window size for volatility calculation
             units: (d, w, m, y)
-        
+
         Returns:
             DataFrame with Date and volatility columns for each asset, lagged by 1 period
         """
@@ -95,13 +97,14 @@ class Features:
                 print(f"{'='*10} Exception Here {'='*10}")
                 print("Units must be either d, w, m or y")
                 return
-        
+
         result = self.data.select(
             pl.col(self.date_col),
             *[
                 (
                     pl.col(col)
-                    .rolling_std(window_size=window)  # rolling standard deviation of returns
+                    # rolling standard deviation of returns
+                    .rolling_std(window_size=window)
                     .shift(1)  # lag by 1 period
                 ).alias(f"{col}_realvol{window}{units.lower()}")
                 for col in self.asset_cols
@@ -118,7 +121,7 @@ class Features:
             bench (pl.DataFrame): benchmark to calculate beta against. Should have columns [Date, benchmark_col]
             bench_col (str): name of the benchmark return column. Defaults to "benchmark".
             units (str, optional): (d, w, m, y). Defaults to "m".
-        
+
         Returns:
             DataFrame with Date and beta columns for each asset, lagged by 1 period
         """
@@ -129,12 +132,12 @@ class Features:
                 print(f"{'='*10} Exception Here {'='*10}")
                 print("Units must be either d, w, m or y")
                 return
-        
-        # join bench and data. ASSUMES NO CODING ERRORS. TODO: clean data before calculating 
-        data_with_bench = self.data.join(bench.select(pl.col(self.date_col), pl.col(bench_col)), 
-                                          on=self.date_col, 
-                                          how="left")
-        
+
+        # join bench and data. ASSUMES NO CODING ERRORS. TODO: clean data before calculating
+        data_with_bench = self.data.join(bench.select(pl.col(self.date_col), pl.col(bench_col)),
+                                         on=self.date_col,
+                                         how="left")
+
         # Calculate rolling beta for each asset: beta = cov(asset, bench) / var(bench)
         result = data_with_bench.select(
             pl.col(self.date_col),
@@ -143,12 +146,13 @@ class Features:
                     (
                         # Rolling covariance: E[XY] - E[X]E[Y]
                         (
-                            (pl.col(col) * pl.col(bench_col)).rolling_mean(window_size=window)
-                            - 
-                            (pl.col(col).rolling_mean(window_size=window) * 
+                            (pl.col(col) * pl.col(bench_col)
+                             ).rolling_mean(window_size=window)
+                            -
+                            (pl.col(col).rolling_mean(window_size=window) *
                              pl.col(bench_col).rolling_mean(window_size=window))
                         )
-                        / 
+                        /
                         # Divide by rolling variance of benchmark
                         pl.col(bench_col).rolling_var(window_size=window)
                     )
@@ -158,5 +162,5 @@ class Features:
                 for col in self.asset_cols
             ]
         )
-        
+
         return result
