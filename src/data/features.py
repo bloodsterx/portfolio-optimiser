@@ -113,6 +113,66 @@ class Features:
 
         return result
 
+    def compute_rolling_covariance(
+        returns: np.ndarray,
+        window: int,
+        min_periods: int = None,
+        method: str = 'ledoit_wolf'
+    ) -> np.ndarray:
+        """
+        Compute rolling covariance matrices from returns data.
+
+        For each time t, computes covariance from returns in [t-window+1, t].
+        eliminates look-ahead bias - cov at time t only uses data up to t.
+
+        Args:
+            returns: Array of shape (T, n_assets) containing asset returns
+            window: Number of periods to use for covariance estimation
+            min_periods: Minimum periods required (defaults to window)
+            method: Estimation method:
+                - 'sample': Standard sample covariance with small regularization
+                - 'ledoit_wolf': Ledoit-Wolf shrinkage (recommended for finance)
+
+        Returns:
+            Array of shape (T, n_assets, n_assets) with covariance matrices.
+            Early periods with insufficient data use identity matrix scaled by avg variance.
+        """
+        if method == 'ledoit_wolf':
+            from sklearn.covariance import LedoitWolf
+
+        T, n_assets = returns.shape
+        min_periods = min_periods or window
+
+        cov_matrices = np.zeros((T, n_assets, n_assets))
+
+        if method == 'ledoit_wolf':
+            lw = LedoitWolf()
+
+        for t in range(T):
+            if t < min_periods - 1:
+                # Not enough data - use scaled identity as fallback
+                # Estimate variance from available data or use small default
+                if t > 0:
+                    available = returns[:t+1]
+                    avg_var = np.var(available, axis=0).mean()
+                else:
+                    avg_var = 0.01  # Default variance
+                cov_matrices[t] = np.eye(n_assets) * avg_var
+            else:
+                # Use rolling window [t-window+1, t] inclusive
+                start_idx = max(0, t - window + 1)
+                window_returns = returns[start_idx:t+1]
+
+                if method == 'ledoit_wolf':
+                    # Ledoit-Wolf shrinkage (already regularized, no need for extra epsilon)
+                    cov_matrices[t] = lw.fit(window_returns).covariance_
+                else:
+                    # Sample covariance with small regularization
+                    cov_matrices[t] = np.cov(window_returns, rowvar=False)
+                    cov_matrices[t] += np.eye(n_assets) * 1e-6
+
+        return cov_matrices
+
     def beta(self, window, bench: pl.DataFrame, bench_col: str = "benchmark", units="m") -> pl.DataFrame:
         """Calculates the rolling beta of asset to benchmark. Defaults to market portfolio proxy (FF49)
 
