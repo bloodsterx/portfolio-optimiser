@@ -133,8 +133,11 @@ class Trainer:
                     w_hat = oracle(c_hat, Sigma, rf)
                     w_true = oracle(C_batch, Sigma, rf)
 
-                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
-                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
+                    expr_hat = torch.einsum('Bi, Bij, Bj -> B', w_hat, Sigma, w_hat)
+                    expr_true = torch.einsum('Bi, Bij, Bj -> B', w_true, Sigma, w_true)
+
+                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (expr_hat)
+                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (expr_true)
                     
                     regret = (util_true - util_hat).mean()
                     val_regret += regret.item() * X_batch.size(0)
@@ -197,7 +200,7 @@ class Trainer:
 
 
 def run():
-    # step 1. Extract the features from the data
+    # step 1. extract the features from the data
     import csv
     
     with open("sp500-stocks.csv", "r") as f:
@@ -232,7 +235,7 @@ def run():
         pl.col(col).pct_change().alias(col) for col in asset_cols
     ])
 
-    # Compute features
+    # Compute features and store in polars dataframes
     features = Features(returns_pl)
  
     mom1m = features.mom(1)
@@ -268,7 +271,7 @@ def run():
     
     print(f"X shape: {X.shape}, C shape: {C.shape}")
 
-    # split data
+    # step 2. prepare data into splits, into datasets and create loader objects 
     X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
     C_train, C_val, C_test = Trainer.split_train_data(C, 0.7)
     cov_train = compute_rolling_covariance(C_train, window=3, method='ledoit_wolf')
@@ -290,6 +293,7 @@ def run():
     C_val_t = torch.tensor(C_val, dtype=torch.float32)
     cov_train_t = torch.tensor(cov_train, dtype=torch.float32)
     cov_val_t = torch.tensor(cov_val, dtype=torch.float32)
+
     # setup dataloader objects
     train_dataset = CostDataset(X_train_t, C_train_t, cov_train_t, rf)
     val_dataset = CostDataset(X_val_t, C_val_t, cov_val_t, rf)
@@ -299,7 +303,7 @@ def run():
     
     print(f"Created dataloaders with {len(train_dataset)} train samples, {len(val_dataset)} val samples")
 
-    # train!
+    # step 3. train!
     model = MLPModel(X_train_t.shape[1], len(asset_cols))
     trainer = Trainer(model)
     model, output = trainer.train(train_loader, val_loader, loss_type="SPO+")
