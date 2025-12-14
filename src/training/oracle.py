@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import cvxpy as cp
 
+
 class MVO:
     """
     Markowitz oracle
@@ -18,18 +19,19 @@ class MVO:
     - allow for time-varying Cov. GARCH? MixtureOfExperts forests which classify regimes and provide different covariance estiamtes for each regime
 
     """
+
     def __init__(
         self,
         risk_av: float = 1.0,
         long_only: bool = True,
         device: str = "cpu",
-        solver: str = "ECOS" # TODO
+        solver: str = "ECOS"  # TODO
         # constraints
     ):
         if device == "cuda" and not torch.cuda.is_available():
             print("cuda not available")
             device = "cpu"
-        
+
         self.device = torch.device(device)
         self.risk_av = risk_av
         self.long_only = long_only
@@ -51,33 +53,34 @@ class MVO:
 
         define the problem cp.Problem()
         Solve portfolio optimization for a batch of expected returns.
-        
+
         Args:
             C: Expected returns tensor (B x N)
             cov: Covariance matrix (N x N), supports time-varying covariance
             rf: Risk-free rate (scalar or tensor), supports time-varying rf
-        
+
         Returns:
             W: Optimal portfolio weights (B x N)
         """
         # Move cov to device and convert to numpy
-        C_np = C.detach().cpu().numpy() # detach since cvxpy doesn't work with tensors
+        C_np = C.detach().cpu().numpy()  # detach since cvxpy doesn't work with tensors
         cov_np = cov.detach().cpu().numpy()
-        n_assets = cov.shape[0]
-        
+        n_assets = cov.shape[-1]  
+
         batch_size = C_np.shape[0]
 
         W_batch = np.zeros_like(C_np)
         # TODO: super inefficient, can we do batch optimisation or use threads?
         for i in range(batch_size):
             mu = C_np[i]  # N x 1 (expected return vector)
-            w = cp.Variable(n_assets) 
+            w = cp.Variable(n_assets)
 
-            print(f"shape of w: {w.shape}\n" + "="*20 + f"\nshape of cov_np: {cov_np.shape}")
-            print(f"cov_np: {cov_np}")
-            print(f"mu: {mu}")
+            # print(f"shape of w: {w.shape}\n" + "="*20 +
+            #       f"\nshape of cov_np: {cov_np.shape}")
+            # print(f"cov_np: {cov_np}")
+            # print(f"mu: {mu}")
 
-            p_var = cp.quad_form(w, cov_np)
+            p_var = cp.quad_form(w, cov_np[i])
             p_ret = w @ mu
             objective = cp.Minimize((0.5 * self.risk_av) * p_var - p_ret)
             constraints = [
@@ -97,13 +100,16 @@ class MVO:
                     W_batch[i] = w.value
 
                 else:
-                    print(f"Optimisation failed for sample {i} with status {problem.status}. Fallback to equal weights")
+                    print(
+                        f"Optimisation failed for sample {i} with status {problem.status}. Fallback to equal weights")
                     # or should I just abort
-                    W_batch[i] = np.ones(n_assets) / n_assets  # equal weight fallback
+                    # equal weight fallback
+                    W_batch[i] = np.ones(n_assets) / n_assets
 
             except Exception as e:
                 print(f"Error solving optimisation for sample {i}: {e}")
-                W_batch[i] = np.ones(n_assets) / n_assets  # equal weight fallback
-        
+                # equal weight fallback
+                W_batch[i] = np.ones(n_assets) / n_assets
+
         W_torch = torch.tensor(W_batch, dtype=C.dtype, device=self.device)
         return W_torch
