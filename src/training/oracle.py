@@ -73,6 +73,10 @@ class MVO:
             mu = C_np[i]  # N x 1 (expected return vector)
             w = cp.Variable(n_assets) 
 
+            print(f"shape of w: {w.shape}\n" + "="*20 + f"\nshape of cov_np: {cov_np.shape}")
+            print(f"cov_np: {cov_np}")
+            print(f"mu: {mu}")
+
             p_var = cp.quad_form(w, cov_np)
             p_ret = w @ mu
             objective = cp.Minimize((0.5 * self.risk_av) * p_var - p_ret)

@@ -3,7 +3,10 @@ import torch
 import numpy as np
 import polars as pl
 from torch.utils.data import DataLoader
+
+from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset
+from ..data.covariance import compute_rolling_covariance
 from ..data.features import Features
 from .loss import SPOPlusLoss
 from .oracle import MVO
@@ -231,13 +234,17 @@ def run():
 
     # Compute features
     features = Features(returns_pl)
-    print(features.head())
+ 
     mom1m = features.mom(1)
     mom12m = features.mom(12)
+
+    # ==============================
     # skip beta for now
     # rolling_beta1m = features.beta(1, bench_data)
     # rolling_beta12m = features.beta(12, bench_data)
-    volatility1m = features.volatility(1)
+    # ==============================
+
+    volatility1m = features.volatility(3)
     volatility12m = features.volatility(12)
     
     # Combine all features into a single DataFrame
@@ -245,9 +252,7 @@ def run():
     combined = returns_pl.clone()
 
     # Join each feature DataFrame on Date
-    # Each feature DF has Date + feature columns for each asset
     for feature_df in [mom1m, mom12m, volatility1m, volatility12m]:
-        print(feature_df.head())
         combined = combined.join(feature_df, on="Date", how="left")
     
     combined = combined.drop_nulls()
@@ -266,31 +271,40 @@ def run():
     # split data
     X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
     C_train, C_val, C_test = Trainer.split_train_data(C, 0.7)
+    cov_train = compute_rolling_covariance(C_train, window=3, method='ledoit_wolf')
+    cov_val = compute_rolling_covariance(C_val, window=3, method='ledoit_wolf')
+    cov_test = compute_rolling_covariance(C_test, window=3, method='ledoit_wolf')
+    
+    print(f"cov_train shape: {cov_train.shape}, cov_val shape: {cov_val.shape}, cov_test shape: {cov_test.shape}")
+    print(f"cov_train head: {cov_train[:5]}, cov_val head: {cov_val[:5]}, cov_test head: {cov_test[:5]}")
     
     print(f"Train: X={X_train.shape}, C={C_train.shape}")
     print(f"Val: X={X_val.shape}, C={C_val.shape}")
     print(f"Test: X={X_test.shape}, C={C_test.shape}")
     
-    # TODO: Calculate covariance matrix from training data
-    n_assets = C_train.shape[1]
-    cov_matrix = np.eye(n_assets) * 0.01
+    # Calculate covariance matrix from training data
     rf = 0.02
     X_train_t = torch.tensor(X_train, dtype=torch.float32)
     C_train_t = torch.tensor(C_train, dtype=torch.float32)
     X_val_t = torch.tensor(X_val, dtype=torch.float32)
     C_val_t = torch.tensor(C_val, dtype=torch.float32)
-    cov_t = torch.tensor(cov_matrix, dtype=torch.float32)
-    
+    cov_train_t = torch.tensor(cov_train, dtype=torch.float32)
+    cov_val_t = torch.tensor(cov_val, dtype=torch.float32)
     # setup dataloader objects
-    train_dataset = CostDataset(X_train_t, C_train_t, cov_t, rf)
-    val_dataset = CostDataset(X_val_t, C_val_t, cov_t, rf)
+    train_dataset = CostDataset(X_train_t, C_train_t, cov_train_t, rf)
+    val_dataset = CostDataset(X_val_t, C_val_t, cov_val_t, rf)
     
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
     
     print(f"Created dataloaders with {len(train_dataset)} train samples, {len(val_dataset)} val samples")
 
+    # train!
+    model = MLPModel(X_train_t.shape[1], len(asset_cols))
+    trainer = Trainer(model)
+    model, output = trainer.train(train_loader, val_loader, loss_type="SPO+")
 
+    print(output)
     
 if __name__ == "__main__":
     run()
