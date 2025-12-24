@@ -133,17 +133,11 @@ class Trainer:
                     w_hat = oracle(c_hat, Sigma, rf)
                     w_true = oracle(C_batch, Sigma, rf)
 
-<<<<<<< HEAD
                     expr_hat = torch.einsum('Bi, Bij, Bj -> B', w_hat, Sigma, w_hat)
                     expr_true = torch.einsum('Bi, Bij, Bj -> B', w_true, Sigma, w_true)
 
-                    util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (expr_hat)
-                    util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (expr_true)
-=======
-                    # Utility = -cost - risk_penalty (since C_batch is costs, -C_batch gives returns)
-                    util_hat = (-C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
-                    util_true = (-C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
->>>>>>> 0386ba3 (refactor: cost is actually negative of returns now, changed applied for staying consistent with the literature)
+                    util_hat = (-C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (expr_hat)
+                    util_true = (-C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (expr_true)
                     
                     regret = (util_true - util_hat).mean()
                     val_regret += regret.item() * X_batch.size(0) #
@@ -212,7 +206,7 @@ def run():
     with open("sp500-stocks.csv", "r") as f:
         reader = csv.reader(f)
         next(reader)
-        tickers = [row[0].strip() for row in reader if row][:10]
+        tickers = [row[0].strip() for row in reader if row]
     
     print(f"Loaded {len(tickers)} tickers: {tickers[:10]}...")  # Preview first 10
     
@@ -235,11 +229,38 @@ def run():
         date_col_name = timeseries_pl.columns[0]  # First column should be the date
         timeseries_pl = timeseries_pl.rename({date_col_name: "Date"})
     
-    # prices -> returns conversion
+    # Filter out assets with too many missing values
     asset_cols = [col for col in timeseries_pl.columns if col != "Date"]
+    
+    print(f"Timeseries shape before cleaning: {timeseries_pl.shape}")
+    print(f"Timeseries nulls before cleaning: {timeseries_pl.null_count().sum_horizontal()[0]}")
+    
+    # Drop columns where more than 10% of data is missing
+    null_threshold = len(timeseries_pl) * 0.1
+    cols_to_keep = ["Date"]
+    for col in asset_cols:
+        null_count = timeseries_pl[col].null_count()
+        if null_count <= null_threshold:
+            cols_to_keep.append(col)
+    
+    timeseries_pl = timeseries_pl.select(cols_to_keep)
+    asset_cols = [col for col in timeseries_pl.columns if col != "Date"]
+    print(f"Kept {len(asset_cols)} assets after filtering (removed {len([col for col in asset_cols if col not in cols_to_keep])} assets with > 10% missing data)")
+    
+    # Fill remaining missing values
+    # Forward-fill: carry last known price forward, then backfill for any nulls at the start
+    timeseries_pl = timeseries_pl.with_columns([
+        pl.col(col).forward_fill().backward_fill().alias(col) for col in asset_cols
+    ])
+    
+    print(f"Timeseries nulls after fill: {timeseries_pl.null_count().sum_horizontal()[0]}")
+    
+    # prices -> returns conversion
     returns_pl = timeseries_pl.with_columns([
         pl.col(col).pct_change().alias(col) for col in asset_cols
     ])
+    
+    print(f"Final shape: {returns_pl.shape} with {len(asset_cols)} assets")
 
     # Compute features and store in polars dataframes
     features = Features(returns_pl)
@@ -264,7 +285,16 @@ def run():
     for feature_df in [mom1m, mom12m, volatility1m, volatility12m]:
         combined = combined.join(feature_df, on="Date", how="left")
     
-    combined = combined.drop_nulls()
+    # Slice after the max rolling window to remove initial NaNs from rolling windows
+    # The 12-month rolling windows create nulls for the first 12 rows + 1 for pct_change
+    max_window = 13
+    combined = combined.slice(max_window, combined.height - max_window)
+    
+    # Check if there are any remaining nulls (there shouldn't be after forward/backward fill)
+    total_nulls = combined.null_count().sum_horizontal()[0]
+    if total_nulls > 0:
+        print(f"Warning: Found {total_nulls} nulls after filling, dropping rows with nulls")
+        combined = combined.drop_nulls()
     
     print(f"Combined features shape: {combined.shape}")
     print(f"Columns: {combined.columns[:10]}...")
@@ -313,8 +343,10 @@ def run():
 
     # step 3. train!
     model = MLPModel(X_train_t.shape[1], len(asset_cols))
-    trainer = Trainer(model)
-    model, output = trainer.train(train_loader, val_loader, loss_type="SPO+")
+    trainer = Trainer(model, device="cuda")
+    model, output = trainer.train(train_loader, val_loader, loss_type="SPO+", n_epochs=5000)
+
+    torch.save(model.state_dict(), "20251224-DL-weights.pt")
 
     print(output)
     
