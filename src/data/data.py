@@ -115,14 +115,14 @@ class CostDataset(Dataset):
         """
         Args:
             X: Features tensor, shape (T, d_features)
-            C: Returns (costs => negative returns) tensor, shape (T, n_assets)
+            C: Cost vectors tensor, shape (T, n_assets), where costs = -expected_returns
             cov: Either:
                 - Single covariance matrix (n_assets, n_assets) for static mode
                 - Stacked covariance matrices (T, n_assets, n_assets) for rolling mode
             rf: Risk-free rate (scalar)
         """
         self.X = X  # shape = (T, d_features)
-        self.C = C  # shape = (T, n_assets) -> actual returns 'costs'
+        self.C = C  # shape = (T, n_assets) -> costs (negative returns)
         self.rf = rf
 
         # Determine covariance mode based on shape

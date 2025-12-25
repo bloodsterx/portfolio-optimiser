@@ -6,13 +6,16 @@ class SPOPlusLoss:
 
     def __call__(self, c_hat: torch.tensor, c_true: torch.tensor, cov: torch.tensor, rf: float = 0.0):
         """
-        SPO+ loss function.
+        SPO+ loss function for cost-based optimization.
         
-        xi_s(c) := max_{w in S} [cT w - 2c_hatT w] + 2c_hatT w*(c) - w_true
+        From Elmachtoub & Grigas (2022):
+        Loss(c_hat) = max_{w in S} [c_true^T w - 2*c_hat^T w] + 2*c_hat^T w*(c_true) - c_true^T w*(c_true)
+        
+        where w*(c) is the optimal solution under cost vector c.
         
         Args:
-            c_hat: Predicted expected returns (B x N)
-            c_true: True expected returns (B x N)
+            c_hat: Predicted costs (B x N), where costs = -expected_returns
+            c_true: True costs (B x N), where costs = -expected_returns
             cov: Covariance matrix (N x N)
             rf: Risk-free rate (scalar or tensor)
         """

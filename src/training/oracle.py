@@ -39,23 +39,15 @@ class MVO:
 
     def __call__(self, C: torch.Tensor, cov: torch.Tensor, rf: float = 0.0) -> torch.Tensor:
         """
-         for i in range batch
-
-        get the i'th expected return (-C_np[i])
-
-        Define the optimisation variable (optim over weights 'w')
-
-        setup the optimisation problem:
-        - variance = cp.quad_form
-        - portfolio return = mu @ w
-        - objective = minimise (-(mu@w - 0.5Aw@Sigma@wT))
-        - constraints = [cp.sum(variable) = 1,w >= 0]
-
-        define the problem cp.Problem()
-        Solve portfolio optimization for a batch of expected returns.
-
+        Solve portfolio optimization for a batch of cost vectors.
+        
+        The oracle converts costs to expected returns (mu = -C) and solves:
+            maximize: mu^T w - 0.5 * risk_aversion * w^T Sigma w
+            which is equivalent to:
+            minimize: C^T w + 0.5 * risk_aversion * w^T Sigma w
+        
         Args:
-            C: Expected returns tensor (B x N)
+            C: Cost vectors (B x N), where costs = -expected_returns
             cov: Covariance matrix (N x N), supports time-varying covariance
             rf: Risk-free rate (scalar or tensor), supports time-varying rf
 
@@ -72,8 +64,9 @@ class MVO:
         W_batch = np.zeros_like(C_np)
         # TODO: super inefficient, can we do batch optimisation or use threads?
         for i in range(batch_size):
-            mu = C_np[i]  # N x 1 (expected return vector)
-            w = cp.Variable(n_assets)
+            # Convert costs to expected returns: mu = -c
+            mu = -C_np[i]  # N x 1 (expected return vector)
+            w = cp.Variable(n_assets) 
 
             # print(f"shape of w: {w.shape}\n" + "="*20 +
             #       f"\nshape of cov_np: {cov_np.shape}")

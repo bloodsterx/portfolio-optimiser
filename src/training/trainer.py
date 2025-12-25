@@ -80,7 +80,7 @@ class Trainer:
                 # 1. forward pass
                 c_hat = self.model(X_batch)
 
-                # 2. Calculate loss (pass Sigma and rf for SPO+)
+                # 2. loss calc (pass Sigma and rf for SPO+)
                 match loss_type:
                     case "SPO+":
                         loss = loss_fn(c_hat, C_batch, Sigma, rf)
@@ -90,10 +90,10 @@ class Trainer:
                 # 3. clear old gradients
                 optimizer.zero_grad()  
 
-                # 4. Backpropagation: compute gradients
+                # 4. backprop
                 loss.backward()
                 
-                # 5. Update model parameters
+                # 5. update Params
                 optimizer.step()
 
                 train_loss += loss.item() * X_batch.size(0)
@@ -133,14 +133,20 @@ class Trainer:
                     w_hat = oracle(c_hat, Sigma, rf)
                     w_true = oracle(C_batch, Sigma, rf)
 
+<<<<<<< HEAD
                     expr_hat = torch.einsum('Bi, Bij, Bj -> B', w_hat, Sigma, w_hat)
                     expr_true = torch.einsum('Bi, Bij, Bj -> B', w_true, Sigma, w_true)
 
                     util_hat = (C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (expr_hat)
                     util_true = (C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (expr_true)
+=======
+                    # Utility = -cost - risk_penalty (since C_batch is costs, -C_batch gives returns)
+                    util_hat = (-C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (w_hat @ Sigma * w_hat).sum(dim=1)
+                    util_true = (-C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (w_true @ Sigma * w_true).sum(dim=1)
+>>>>>>> 0386ba3 (refactor: cost is actually negative of returns now, changed applied for staying consistent with the literature)
                     
                     regret = (util_true - util_hat).mean()
-                    val_regret += regret.item() * X_batch.size(0)
+                    val_regret += regret.item() * X_batch.size(0) #
 
                     n_val_samples += X_batch.size(0)
 
@@ -267,7 +273,9 @@ def run():
                     if col not in ["Date"] + asset_cols]
 
     X = combined.select(feature_cols).to_numpy()
-    C = combined.select(asset_cols).to_numpy()
+    # Convert returns to costs (c = -returns) to match SPO+ paper formulation
+    returns = combined.select(asset_cols).to_numpy()
+    C = -returns  # Cost formulation: minimize costs = maximize returns
     
     print(f"X shape: {X.shape}, C shape: {C.shape}")
 
