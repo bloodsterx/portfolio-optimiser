@@ -111,7 +111,7 @@ class CostDataset(Dataset):
     - 'rolling': Per-sample covariance from rolling window (realistic, no look-ahead bias)
     """
 
-    def __init__(self, X, C, cov, rf):
+    def __init__(self, X, Y):
         """
         Args:
             X: Features tensor, shape (T, d_features)
@@ -122,30 +122,11 @@ class CostDataset(Dataset):
             rf: Risk-free rate (scalar)
         """
         self.X = X  # shape = (T, d_features)
-        self.C = C  # shape = (T, n_assets) -> costs (negative returns)
-        self.rf = rf
+        self.Y = Y  # shape = (T, n_assets) -> costs (negative returns)
 
-        # Determine covariance mode based on shape
-        if cov.dim() == 2:
-            # Static mode: single (n_assets, n_assets) matrix
-            self.cov_mode = 'static'
-            self.cov = cov
-        elif cov.dim() == 3:
-            # Rolling mode: (T, n_assets, n_assets) stacked matrices
-            self.cov_mode = 'rolling'
-            self.cov = cov
-            assert cov.shape[0] == len(X), \
-                f"Rolling cov samples ({cov.shape[0]}) must match data samples ({len(X)})"
-        else:
-            raise ValueError(
-                f"cov must be 2D (static) or 3D (rolling), got {cov.dim()}D")
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
-        if self.cov_mode == 'static':
-            return self.X[idx], self.C[idx], self.cov, self.rf
-        else:
-            # Return the covariance matrix for this specific time point
-            return self.X[idx], self.C[idx], self.cov[idx], self.rf
+        return self.X[idx], self.Y[idx]

@@ -1,14 +1,14 @@
+from datetime import datetime
 import torch.nn as nn
 import torch
 import numpy as np
 import polars as pl
 from torch.utils.data import DataLoader
+from matplotlib import pyplot as plt
 
 from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset
-from ..data.covariance import compute_rolling_covariance
 from ..data.features import Features
-from .loss import SPOPlusLoss
 from .oracle import MVO
 
 
@@ -28,38 +28,18 @@ class Trainer:
         self,
         train_dataloader,
         val_dataloader,    
-        oracle_typ="MVO",
         optim="adam", 
         n_epochs=100, 
         lr = 1e-3, 
-        loss_type="MSE",
-        risk_av=5.0,
     ):
 
-        # Initialize optimizer
         match optim:
             case "adam":
                 optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
             case "SGD":
                 optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
-        
-        # Initialize oracle once (for SPO+)
-        oracle = None
-        match oracle_typ:
-            case "MVO":
-                oracle = MVO(
-                    risk_av=risk_av,
-                    long_only=True,
-                    device=self.device
-                )
 
-        # Initialize loss function once
-        loss_fn = None
-        match loss_type:
-            case "MSE":
-                loss_fn = nn.MSELoss()
-            case "SPO+":
-                loss_fn = SPOPlusLoss(oracle=oracle)
+        loss_fn = torch.nn.MSELoss()
 
         output = []
 
@@ -68,24 +48,12 @@ class Trainer:
             train_loss = 0.0
             n_train_samples = 0
 
-            for X_batch, C_batch, Sigma, rf in train_dataloader:
-                # Move all data to device
-                X_batch = X_batch.to(self.device)
-                C_batch = C_batch.to(self.device)
-                Sigma = Sigma.to(self.device)
-
-                # if rf is variable or constant (e.g. using historical US 10 year T-bill )
-                rf = rf.to(self.device) if isinstance(rf, torch.Tensor) else rf
-
+            for X_batch, Y_batch in train_dataloader:
                 # 1. forward pass
-                c_hat = self.model(X_batch)
+                Y_hat_train = self.model(X_batch)
 
-                # 2. loss calc (pass Sigma and rf for SPO+)
-                match loss_type:
-                    case "SPO+":
-                        loss = loss_fn(c_hat, C_batch, Sigma, rf)
-                    case _:
-                        loss = loss_fn(c_hat, C_batch)
+                # 2. loss calc
+                loss = loss_fn(Y_hat_train, Y_batch)
 
                 # 3. clear old gradients
                 optimizer.zero_grad()  
@@ -103,65 +71,33 @@ class Trainer:
 
             self.model.eval()
             val_loss = 0.0
-            val_mse = 0.0
-            val_regret = 0.0
             n_val_samples = 0
 
             # validation 
             with torch.inference_mode():
-                for X_batch, C_batch, Sigma, rf in val_dataloader:
+                for X_batch, Y_batch in val_dataloader:
                     X_batch = X_batch.to(self.device)
-                    C_batch = C_batch.to(self.device)
-                    Sigma = Sigma.to(self.device)
-                    rf = rf.to(self.device) if isinstance(rf, torch.Tensor) else rf
+                    Y_batch = Y_batch.to(self.device)
 
-                    c_hat = self.model(X_batch)
+                    Y_hat_val = self.model(X_batch)
+                    loss = loss_fn(Y_hat_val, Y_batch)
 
-                    match loss_type:
-                        case "SPO+":
-                            loss = loss_fn(c_hat, C_batch, Sigma, rf)
-                        case _:
-                            loss = loss_fn(c_hat, C_batch)
-
-                    val_loss += loss.item() * X_batch.size(0)
-
-                    # calc mse-loss
-                    mse = ((c_hat - C_batch) ** 2).mean()
-                    val_mse += mse.item() * X_batch.size(0)
-
-                    # calc 'regret' (decision quality - cost of choosing port A over B)
-                    w_hat = oracle(c_hat, Sigma, rf)
-                    w_true = oracle(C_batch, Sigma, rf)
-
-                    expr_hat = torch.einsum('Bi, Bij, Bj -> B', w_hat, Sigma, w_hat)
-                    expr_true = torch.einsum('Bi, Bij, Bj -> B', w_true, Sigma, w_true)
-
-                    util_hat = (-C_batch * w_hat).sum(dim=1) - 0.5 * risk_av * (expr_hat)
-                    util_true = (-C_batch * w_true).sum(dim=1) - 0.5 * risk_av * (expr_true)
-                    
-                    regret = (util_true - util_hat).mean()
-                    val_regret += regret.item() * X_batch.size(0) #
-
+                    val_loss += loss
+                    val_loss = val_loss.item()
                     n_val_samples += X_batch.size(0)
 
             avg_val_loss = val_loss / n_val_samples
-            avg_val_mse = val_mse / n_val_samples
-            avg_val_regret = val_regret / n_val_samples
 
             if epoch % 5 == 0:
                 output.append({
                     "epoch": epoch,
-                    "train loss": avg_train_loss,
-                    "val Loss": avg_val_loss,
-                    "val MSE": avg_val_mse,
-                    "val regret": avg_val_regret,
+                    "train_loss": avg_train_loss,
+                    "val_loss": avg_val_loss,
                 })
 
                 print(f"Epoch {epoch:3d} | "
-                    f"train loss: {avg_train_loss:.4f} | "
-                    f"val loss: {avg_val_loss:.4f} | "
-                    f"val MSE: {avg_val_mse:.4f} | "
-                    f"val regret: {avg_val_regret:.4f}")
+                    f"train_loss: {avg_train_loss:.4f} | "
+                    f"val_loss: {avg_val_loss:.4f} | ")
 
 
         return self.model, output
@@ -199,7 +135,7 @@ class Trainer:
         return train_data, val_data, test_data
 
 
-def run():
+def run(device="cpu"):
     # step 1. extract the features from the data
     import csv
     
@@ -278,10 +214,7 @@ def run():
     volatility12m = features.volatility(12)
     
     # Combine all features into a single DataFrame
-    # Start with returns_pl (has Date + all asset returns)
     combined = returns_pl.clone()
-
-    # Join each feature DataFrame on Date
     for feature_df in [mom1m, mom12m, volatility1m, volatility12m]:
         combined = combined.join(feature_df, on="Date", how="left")
     
@@ -302,6 +235,9 @@ def run():
     feature_cols = [col for col in combined.columns 
                     if col not in ["Date"] + asset_cols]
 
+    dates = combined.select("Date").to_numpy()
+    train_dates, val_dates, test_dates = Trainer.split_train_data(dates, 0.7)
+
     X = combined.select(feature_cols).to_numpy()
     # Convert returns to costs (c = -returns) to match SPO+ paper formulation
     returns = combined.select(asset_cols).to_numpy()
@@ -311,30 +247,27 @@ def run():
 
     # step 2. prepare data into splits, into datasets and create loader objects 
     X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
-    C_train, C_val, C_test = Trainer.split_train_data(C, 0.7)
-    cov_train = compute_rolling_covariance(C_train, window=3, method='ledoit_wolf')
-    cov_val = compute_rolling_covariance(C_val, window=3, method='ledoit_wolf')
-    cov_test = compute_rolling_covariance(C_test, window=3, method='ledoit_wolf')
+    Y_train, Y_val, Y_test = Trainer.split_train_data(C, 0.7)
+
     
-    print(f"cov_train shape: {cov_train.shape}, cov_val shape: {cov_val.shape}, cov_test shape: {cov_test.shape}")
-    print(f"cov_train head: {cov_train[:5]}, cov_val head: {cov_val[:5]}, cov_test head: {cov_test[:5]}")
     
-    print(f"Train: X={X_train.shape}, C={C_train.shape}")
-    print(f"Val: X={X_val.shape}, C={C_val.shape}")
-    print(f"Test: X={X_test.shape}, C={C_test.shape}")
     
-    # Calculate covariance matrix from training data
-    rf = 0.02
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
-    C_train_t = torch.tensor(C_train, dtype=torch.float32)
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
-    C_val_t = torch.tensor(C_val, dtype=torch.float32)
-    cov_train_t = torch.tensor(cov_train, dtype=torch.float32)
-    cov_val_t = torch.tensor(cov_val, dtype=torch.float32)
+    print(f"Train: X={X_train.shape}, Y={Y_train.shape}")
+    print(f"Val: X={X_val.shape}, Y={Y_val.shape}")
+    print(f"Test: X={X_test.shape}, Y={Y_test.shape}")
+
+    device = "cuda"
+    
+    X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
+    Y_train_t = torch.tensor(Y_train, dtype=torch.float32).to(device)
+    X_val_t = torch.tensor(X_val, dtype=torch.float32).to(device)
+    Y_val_t = torch.tensor(Y_val, dtype=torch.float32).to(device)
+    X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+    Y_test_t = torch.tensor(Y_test, dtype=torch.float32).to(device)
 
     # setup dataloader objects
-    train_dataset = CostDataset(X_train_t, C_train_t, cov_train_t, rf)
-    val_dataset = CostDataset(X_val_t, C_val_t, cov_val_t, rf)
+    train_dataset = CostDataset(X_train_t, Y_train_t)
+    val_dataset = CostDataset(X_val_t, Y_val_t)
     
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
@@ -344,11 +277,19 @@ def run():
     # step 3. train!
     model = MLPModel(X_train_t.shape[1], len(asset_cols))
     trainer = Trainer(model, device="cuda")
-    model, output = trainer.train(train_loader, val_loader, loss_type="SPO+", n_epochs=5000)
+    model, output = trainer.train(train_loader, val_loader, n_epochs=500)
+    now = datetime.now()
+    torch.save(model.state_dict(), f"{now.strftime('%Y-%m-%d')}-DL-weights.pt")
 
-    torch.save(model.state_dict(), "20251224-DL-weights.pt")
+    model.eval()
+    loss_fn = torch.nn.MSELoss()
+    with torch.inference_mode():
+        Y_hat = model(X_test_t)
+        test_loss = loss_fn(Y_hat, Y_test_t)
 
-    print(output)
+
+
+    
     
 if __name__ == "__main__":
     run()
