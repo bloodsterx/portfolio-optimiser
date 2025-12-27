@@ -22,7 +22,7 @@ class DataExtractor:
         with open(file_path, "r") as f:
             reader = csv.reader(f)
             next(reader) # skip
-            self.tickers = [row[0].strip() for row in reader if row][:10]
+            self.tickers = [row[0].strip() for row in reader if row]
 
         return self.tickers
            
@@ -133,14 +133,10 @@ class CostDataset(Dataset):
         """
         Args:
             X: Features tensor, shape (T, d_features)
-            C: Cost vectors tensor, shape (T, n_assets), where costs = -expected_returns
-            cov: Either:
-                - Single covariance matrix (n_assets, n_assets) for static mode
-                - Stacked covariance matrices (T, n_assets, n_assets) for rolling mode
-            rf: Risk-free rate (scalar)
+            Y: Returns tensor, shape (T, n_assets), where each row contains expected returns for each asset
         """
         self.X = X  # shape = (T, d_features)
-        self.Y = Y  # shape = (T, n_assets) -> costs (negative returns)
+        self.Y = Y  # shape = (T, n_assets) -> returns
 
 
     def __len__(self):

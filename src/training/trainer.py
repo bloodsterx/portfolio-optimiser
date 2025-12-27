@@ -13,7 +13,6 @@ from matplotlib import pyplot as plt
 from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset
 from ..data.features import Features
-from .oracle import MVO
 
 
 class Trainer:
@@ -245,11 +244,10 @@ def run(
     train_dates, val_dates, test_dates = Trainer.split_train_data(dates, 0.7)
 
     X = combined.select(feature_cols).to_numpy()
-    # Convert returns to costs (c = -returns) to match SPO+ paper formulation
     returns = combined.select(asset_cols).to_numpy()
-    Y = -returns 
+    Y = returns 
     
-    print(f"X shape: {X.shape}, C shape: {Y.shape}")
+    print(f"X shape: {X.shape}, Y shape: {Y.shape}")
 
     X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
     Y_train, Y_val, Y_test = Trainer.split_train_data(Y, 0.7)
