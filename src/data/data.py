@@ -1,6 +1,8 @@
 import polars as pl
 import yfinance as yf
+import csv
 from pathlib import Path
+
 
 # Lazy import for torch to avoid DLL issues when not needed
 try:
@@ -12,12 +14,20 @@ except (ImportError, OSError):
 class DataExtractor:
     """Extracts data from various sources (yfinance, CSV, macro data, etc.)"""
 
-    def extract_csv(self, file_path: str):
-        """Extract data from CSV file"""
-        # TODO: implementation
-        pass
+    def __init__(self, tickers=None):
+        self.tickers = tickers
 
-    def extract_yfinance(self, tickers: list[str], start=None, end=None, period=None, interval="1mo"):
+    def extract_csv(self, file_path: str):
+        """Extract ticker data from CSV file. Expects 1st column to be tickers"""
+        with open(file_path, "r") as f:
+            reader = csv.reader(f)
+            next(reader) # skip
+            self.tickers = [row[0].strip() for row in reader if row][:10]
+
+        return self.tickers
+           
+
+    def extract_yfinance(self, tickers: list[str]=None, start=None, end=None, period=None, interval="1mo"):
         """
         Extract close prices from Yahoo Finance
 
@@ -25,10 +35,18 @@ class DataExtractor:
             DataFrame with shape (T x N) where T=time periods, N=num assets
         """
         # yf.Tickers expects a space-separated string of tickers "AAPL MSFT GOOG"
+        if not tickers:
+            tickers = self.tickers
+
+            if not tickers:
+                print("No tickers provided. Load from csv or manually enter a list of yfinance-compatible tickers")
+                return
+
         tickers_str = " ".join(tickers)
         assets = yf.Tickers(tickers_str)
         assets_df = assets.download(
             period=period, interval=interval, start=start, end=end)
+
 
         # Extract only Close prices into T x N dataframe (T=time periods, N=assets)
         if 'Close' in assets_df.columns:
