@@ -9,7 +9,13 @@
         <h1>Flask is running</h1>
         <button id="magicButton">Ask python for the time!</button>
         <p id="responseArea"></p>
-        
+
+        <br>
+        <h1>Personal Greeting</h1>
+        <input type="text" id="userName" placeholder="enter name here">
+        <button id="greetButton">Send to Python</button>
+        <p id="greetingResponse"></p>        
         <script src="{{ url_for('static', filename='script.js')}}"></script>
+        
     </body>
 </html>
