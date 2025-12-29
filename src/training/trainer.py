@@ -6,13 +6,11 @@ from datetime import datetime
 import torch.nn as nn
 import torch
 import numpy as np
-import polars as pl
 from torch.utils.data import DataLoader
 from matplotlib import pyplot as plt
 
 from .model import MLPModel
-from ..data.data import DataExtractor, CostDataset
-from ..data.features import Features
+from ..data.data import DataExtractor, CostDataset, DataProcessor
 
 
 class Trainer:
@@ -21,11 +19,17 @@ class Trainer:
         self.model = model
         self.device = device
         
-        if self.device == "cuda" and not torch.cuda.is_available(): 
-            print("CUDA is not available on this machine")
-            device = "cpu"
+        # Safely check CUDA availability
+        if self.device == "cuda":
+            try:
+                if not torch.cuda.is_available():
+                    print("CUDA is not available on this machine")
+                    self.device = "cpu"
+            except (AssertionError, AttributeError):
+                print("Torch not compiled with CUDA support")
+                self.device = "cpu"
 
-        self.model.to(device)
+        self.model.to(self.device)
 
     def train(
         self,
@@ -172,80 +176,36 @@ def run(
 
     print(f"Loaded {len(extractor.tickers)} tickers: {extractor.tickers[:10]}...")  # Preview first 10
     
-    # <== DATA PROCESSING & CLEANING ==>
+    # <== DATA PROCESSING, CLEANING & FEATURE ENGINEERING ==>
 
-    timeseries_pl = pl.DataFrame(timeseries.reset_index()) # reset index to be the Date column
-    asset_cols = [col for col in timeseries_pl.columns if col != "Date"]
+    processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
     
-    # Drop columns where more than 10% of data is missing
-    null_threshold = len(timeseries_pl) * 0.1
-    cols_to_keep = ["Date"]
-    for col in asset_cols:
-        null_count = timeseries_pl[col].null_count()
-        if null_count <= null_threshold:
-            cols_to_keep.append(col)
+    # Define feature configuration
+    feature_configs = [
+        {'type': 'momentum', 'window': 1},
+        {'type': 'momentum', 'window': 12},
+        {'type': 'volatility', 'window': 3},
+        {'type': 'volatility', 'window': 12},
+        # Add beta features if needed:
+        # {'type': 'beta', 'window': 1, 'bench': bench_data, 'bench_col': 'SPY'},
+        # {'type': 'beta', 'window': 12, 'bench': bench_data, 'bench_col': 'SPY'},
+    ]
     
-    timeseries_pl = timeseries_pl.select(cols_to_keep)
-    asset_cols = [col for col in timeseries_pl.columns if col != "Date"]
-    print(f"Kept {len(asset_cols)} assets after filtering (removed {len([col for col in asset_cols if col not in cols_to_keep])} assets with > 10% missing data)")
+    # Process data through the pipeline
+    processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window=13)
     
-    # Handling Nulls - Forward-fill
-    timeseries_pl = timeseries_pl.with_columns([
-        pl.col(col).forward_fill().alias(col) for col in asset_cols
-    ])
+    # Get processed data
+    asset_cols = processor.get_asset_columns()
+    dates = processor.get_dates()
     
-    print(f"Timeseries nulls after fill: {timeseries_pl.null_count().sum_horizontal()[0]}")
-
-    returns_pl = timeseries_pl.with_columns([
-        pl.col(col).pct_change().alias(col) for col in asset_cols
-    ])
-    
-    print(f"Final shape: {returns_pl.shape} with {len(asset_cols)} assets")
-
-    # <== FEATURE ENGINEERING (HARDCODED) ==> 
-    # ATM: hardcoded, will use args later
-    features = Features(returns_pl)
- 
-    mom1m = features.mom(1)
-    mom12m = features.mom(12)
-
-    # ==============================
-    # skip beta for now
-    # rolling_beta1m = features.beta(1, bench_data)
-    # rolling_beta12m = features.beta(12, bench_data)
-    # ==============================
-
-    volatility1m = features.volatility(3)
-    volatility12m = features.volatility(12)
-    
-    # Combine all features into a single DataFrame
-    combined = returns_pl.clone()
-    for feature_df in [mom1m, mom12m, volatility1m, volatility12m]:
-        combined = combined.join(feature_df, on="Date", how="left")
-    
-    # Remove initial NaNs from rolling windows
-    max_window = 13
-    combined = combined.slice(max_window, combined.height - max_window)
-    # Check if there are any remaining nulls (there shouldn't be after forward fill)
-    total_nulls = combined.null_count().sum_horizontal()[0]
-    if total_nulls > 0:
-        print(f"Warning: Found {total_nulls} nulls after filling, dropping rows with nulls")
-        combined = combined.drop_nulls()
-    
-    print(f"Combined features shape: {combined.shape}")
-    print(f"Columns: {combined.columns[:10]}...")
-    
-    feature_cols = [col for col in combined.columns 
-                    if col not in ["Date"] + asset_cols]
-
-    dates = combined.select("Date").to_numpy()
+    print(f"Kept {len(asset_cols)} assets after filtering")
+    print(f"Combined features shape: {processor.get_combined_dataframe().shape}")
+    print(f"Feature columns: {processor.get_feature_columns()[:10]}...")
 
     # <== DATA SPLITTING FOR TRAIN/VAL/TEST ==>
     train_dates, val_dates, test_dates = Trainer.split_train_data(dates, 0.7)
 
-    X = combined.select(feature_cols).to_numpy()
-    returns = combined.select(asset_cols).to_numpy()
-    Y = returns 
+    X, Y = processor.get_features_and_returns()
     
     print(f"X shape: {X.shape}, Y shape: {Y.shape}")
 
@@ -275,7 +235,7 @@ def run(
     # <== TRAIN & EVAL ==>
 
     model = MLPModel(X_train_t.shape[1], len(asset_cols))
-    trainer = Trainer(model, device="cuda")
+    trainer = Trainer(model, device=device)
     model, output = trainer.train(train_loader, val_loader, n_epochs=500)
 
     plt.figure(figsize=(12,6))
@@ -303,10 +263,17 @@ def run(
     
     
 if __name__ == "__main__":
-    device = "cuda"
-
-    if not torch.cuda.is_available():
+    # Check if CUDA is compiled AND available
+    try:
+        if torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
+            print("CUDA is not available, using CPU")
+    except (AssertionError, AttributeError):
+        # torch not compiled with CUDA support
         device = "cpu"
+        print("Torch not compiled with CUDA, using CPU")
 
     run(device=device, data_path="sp500-stocks.csv")
     
