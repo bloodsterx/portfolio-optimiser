@@ -1,7 +1,3 @@
-from typing import Any
-
-
-from collections import defaultdict
 from datetime import datetime
 import torch.nn as nn
 import torch
@@ -12,6 +8,34 @@ from matplotlib import pyplot as plt
 from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset, DataProcessor
 
+class Log:
+    def __init__(
+        self, 
+        in_features, 
+        data_periods, 
+        hyperparams,
+        test_loss,
+        log_dir="logs"
+    ):
+        self.date = datetime.now().strftime("%Y-%m-%d")
+        self.log_dir = log_dir
+        self.in_features = in_features
+        self.data_periods = data_periods
+        self.hyperparams = hyperparams # batch size, n_epochs, lr, etc
+        self.test_loss = test_loss
+
+        assert self.hyperparams["batch_size"] is not None
+        assert self.hyperparams["n_epochs"] is not None
+        assert self.hyperparams["lr"] is not None
+
+    def save_log(self):
+        log_file = f"{self.log_dir}/{self.date}.txt"
+        with open(log_file, "w") as f:
+            f.write(f"date: {self.date}\n")
+            f.write(f"in_features: {self.in_features}\n")
+            f.write(f"data_periods: {self.data_periods}\n")
+            f.write(f"hyperparams: {self.hyperparams}\n")
+            f.write(f"test_loss: {self.test_loss}\n")
 
 class Trainer:
     
@@ -43,8 +67,10 @@ class Trainer:
         match optim:
             case "adam":
                 optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-            case "SGD":
+            case "sgd":
                 optimizer = torch.optim.SGD(self.model.parameters(), lr=lr)
+            case _:
+                raise ValueError(f"Unknown optimizer: {optim}. Supported: 'adam', 'sgd'")
 
         loss_fn = torch.nn.MSELoss()
 
@@ -60,6 +86,9 @@ class Trainer:
             n_train_samples = 0
 
             for X_batch, Y_batch in train_dataloader:
+                X_batch = X_batch.to(self.device)
+                Y_batch = Y_batch.to(self.device)
+                
                 # 1. forward pass
                 Y_hat_train = self.model(X_batch)
 
@@ -122,160 +151,193 @@ class Trainer:
 
         return self.model, output
 
-    @staticmethod
-    def split_train_data(data: np.ndarray, split: float) -> tuple[np.ndarray]:
-        """Splits time series matrix into train, test and validation sets
-        
-        Uses chronological splitting (no random shuffling) to maintain time series dependencies.
 
-        Args:
-            data (np.ndarray): Time series data matrix (T x N) where T = time periods, N = n_assets
-            split (float): Training data ratio. The remaining data is split equally between val and test.
+def split_train_data(data: np.ndarray, split: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Splits time series matrix into train, validation, and test sets.
+    
+    Uses chronological splitting (no random shuffling) to maintain time series dependencies.
 
-        Returns:
-            tuple[np.ndarray]: (train_data, val_data, test_data)
-        """
-        if not 0 < split < 1:
-            raise ValueError(f"Split ratio must be between 0 and 1, got {split}")
-        
-        n_samples = len(data)
-        
-        # num. training samples
-        train_partition = int(n_samples * split)
-        
-        # Remaining samples equally split amongst val and test (ie; for all data @ index >= train_partition)
-        remaining = n_samples - train_partition
-        val_size = remaining // 2
-        val_partition = train_partition + val_size
-        
-        train_data = data[:train_partition]
-        val_data = data[train_partition:val_partition]
-        test_data = data[val_partition:]
-        
-        return train_data, val_data, test_data
+    Args:
+        data: Time series data matrix (T x N) where T = time periods, N = n_assets
+        split: Training data ratio. The remaining data is split equally between val and test.
+
+    Returns:
+        (train_data, val_data, test_data)
+    """
+    if not 0 < split < 1:
+        raise ValueError(f"Split ratio must be between 0 and 1, got {split}")
+    
+    n_samples = len(data)
+    train_end = int(n_samples * split)
+    
+    remaining = n_samples - train_end
+    val_end = train_end + remaining // 2
+    
+    return data[:train_end], data[train_end:val_end], data[val_end:]
 
 
-def run(
-    device="cpu", 
-    tickers=None, 
-    data_path=None,
-    data_period="5y",
-    interval="1mo"
-    ):
+def get_device() -> str:
+    """Detect best available device (CUDA or CPU)."""
+    try:
+        if torch.cuda.is_available():
+            return "cuda"
+    except (AssertionError, AttributeError):
+        pass
+    return "cpu"
 
-    # <== EXTRACT DATA ==>
 
+def prepare_data(
+    data_path: str = None,
+    tickers: list[str] = None,
+    data_period: str = "5y",
+    interval: str = "1mo",
+    feature_configs: list[dict] = None,
+    train_split: float = 0.7,
+    device: str = "cpu",
+) -> tuple[DataLoader, DataLoader, torch.Tensor, torch.Tensor, int]:
+    """
+    Extract, process, and split data into train/val/test DataLoaders.
+    
+    Args:
+        data_path: Path to CSV file with ticker symbols
+        tickers: List of ticker symbols (alternative to data_path)
+        data_period: yfinance period string (e.g., "5y", "10y")
+        interval: yfinance interval string (e.g., "1mo", "1wk")
+        feature_configs: List of feature configuration dicts
+        train_split: Fraction of data for training (rest split between val/test)
+        device: Device to place tensors on
+        
+    Returns:
+        (train_loader, val_loader, X_test_tensor, Y_test_tensor, n_assets)
+    """
+    # Default features - TODO: add dynamic feature code (config file input, not hardcoded)
+    if feature_configs is None:
+        feature_configs = [
+            {'type': 'momentum', 'window': 1},
+            {'type': 'momentum', 'window': 12},
+            {'type': 'volatility', 'window': 3},
+            {'type': 'volatility', 'window': 12},
+        ]
+    
     extractor = DataExtractor()
-    if not tickers:
+    if data_path and not tickers:
         extractor.extract_csv(data_path)
+    elif tickers:
+        extractor.tickers = tickers
+        
+    timeseries = extractor.extract_yfinance(period=data_period, interval=interval)
+    print(f"Loaded {len(extractor.tickers)} tickers: {extractor.tickers[:10]}...")
     
-    timeseries = extractor.extract_yfinance(
-        period=data_period,     
-        interval=interval
-    )
-
-    print(f"Loaded {len(extractor.tickers)} tickers: {extractor.tickers[:10]}...")  # Preview first 10
-    
-    # <== DATA PROCESSING, CLEANING & FEATURE ENGINEERING ==>
-
+    # Data pre-processing & cleaning
     processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
-    
-    # Define feature configuration
-    feature_configs = [
-        {'type': 'momentum', 'window': 1},
-        {'type': 'momentum', 'window': 12},
-        {'type': 'volatility', 'window': 3},
-        {'type': 'volatility', 'window': 12},
-        # Add beta features if needed:
-        # {'type': 'beta', 'window': 1, 'bench': bench_data, 'bench_col': 'SPY'},
-        # {'type': 'beta', 'window': 12, 'bench': bench_data, 'bench_col': 'SPY'},
-    ]
-    
-    # Process data through the pipeline
     processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window=13)
     
-    # Get processed data
     asset_cols = processor.get_asset_columns()
-    dates = processor.get_dates()
-    
     print(f"Kept {len(asset_cols)} assets after filtering")
     print(f"Combined features shape: {processor.get_combined_dataframe().shape}")
-    print(f"Feature columns: {processor.get_feature_columns()[:10]}...")
-
-    # <== DATA SPLITTING FOR TRAIN/VAL/TEST ==>
-    train_dates, val_dates, test_dates = Trainer.split_train_data(dates, 0.7)
-
-    X, Y = processor.get_features_and_returns()
     
-    print(f"X shape: {X.shape}, Y shape: {Y.shape}")
-
-    X_train, X_val, X_test = Trainer.split_train_data(X, 0.7)
-    Y_train, Y_val, Y_test = Trainer.split_train_data(Y, 0.7)
-
+    # Split data
+    X, Y = processor.get_features_and_returns()
+    X_train, X_val, X_test = split_train_data(X, train_split)
+    Y_train, Y_val, Y_test = split_train_data(Y, train_split)
+    
     print(f"Train: X={X_train.shape}, Y={Y_train.shape}")
     print(f"Val: X={X_val.shape}, Y={Y_val.shape}")
     print(f"Test: X={X_test.shape}, Y={Y_test.shape}")
     
+    # Convert to tensors
     X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
     Y_train_t = torch.tensor(Y_train, dtype=torch.float32).to(device)
     X_val_t = torch.tensor(X_val, dtype=torch.float32).to(device)
     Y_val_t = torch.tensor(Y_val, dtype=torch.float32).to(device)
     X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
     Y_test_t = torch.tensor(Y_test, dtype=torch.float32).to(device)
-
-    # setup dataloader objects
-    train_dataset = CostDataset(X_train_t, Y_train_t)
-    val_dataset = CostDataset(X_val_t, Y_val_t)
     
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    # Create dataloaders
+    train_loader = DataLoader(CostDataset(X_train_t, Y_train_t), batch_size=32, shuffle=False)
+    val_loader = DataLoader(CostDataset(X_val_t, Y_val_t), batch_size=32, shuffle=False)
     
-    print(f"Created dataloaders with {len(train_dataset)} train samples, {len(val_dataset)} val samples")
+    return train_loader, val_loader, X_test_t, Y_test_t, len(asset_cols)
 
-    # <== TRAIN & EVAL ==>
 
-    model = MLPModel(X_train_t.shape[1], len(asset_cols))
+def run_trainer(
+    data_path: str = None,
+    tickers: list[str] = None,
+    data_period: str = "5y",
+    interval: str = "1mo",
+    feature_configs: list[dict] = None,
+    hidden_layers: tuple[int, ...] = (64, 32),
+    n_epochs: int = 500,
+    lr: float = 1e-3,
+    optim: str = "adam",
+    device: str = get_device(),
+    save_plot: bool = True,
+    save_model: bool = True,
+) -> tuple[nn.Module, dict]:
+
+    # Prepare data: data loaders, timeseries tensors of features (X_test_t) and returns (Y_test_t)
+    train_loader, val_loader, X_test_t, Y_test_t, n_assets = prepare_data(
+        data_path=data_path,
+        tickers=tickers,
+        data_period=data_period,
+        interval=interval,
+        feature_configs=feature_configs,
+        device=device,
+    )
+    
+    # Get input dimension from first batch
+    X_sample, _ = next(iter(train_loader)) # EXPLAIN
+    n_features = X_sample.shape[1]
+    
+    # Create model and trainer
+    model = MLPModel(n_features, n_assets, *hidden_layers)
     trainer = Trainer(model, device=device)
-    model, output = trainer.train(train_loader, val_loader, n_epochs=500)
-
-    plt.figure(figsize=(12,6))
-    plt.plot(output["epochs"], output["val_losses"], label="val_loss")
-    plt.plot(output["epochs"], output["train_losses"], label="train_loss")
-    plt.title("Train & Val loss")
-    plt.ylabel("Loss")
-    plt.xlabel("Epoch")
-    plt.legend()
-
-    plt.savefig("train_val_loss.png")
-
-    now = datetime.now()
-    torch.save(model.state_dict(), f"{now.strftime('%Y-%m-%d')}-DL-weights.pt")
-
+    
+    # Train
+    model, output = trainer.train(
+        train_loader, 
+        val_loader, 
+        n_epochs=n_epochs, 
+        lr=lr, 
+        optim=optim
+    )
+    
+    # Evaluate on test set
     model.eval()
     loss_fn = torch.nn.MSELoss()
     with torch.inference_mode():
         Y_hat = model(X_test_t)
-        MSE = loss_fn(Y_hat, Y_test_t)
-
-    print(f"MSE: {MSE}")
-
-
+        test_mse = loss_fn(Y_hat, Y_test_t).item()
     
+    print(f"Test MSE: {test_mse:.6f}")
     
+    # Save artifacts
+    now = datetime.now()
+    
+    if save_plot:
+        plt.figure(figsize=(12, 6))
+        plt.plot(output["epochs"], output["avg_val_losses"], label="val_loss")
+        plt.plot(output["epochs"], output["avg_train_losses"], label="train_loss")
+        plt.title("Train & Val Loss")
+        plt.ylabel("Loss")
+        plt.xlabel("Epoch")
+        plt.legend()
+        plt.savefig(f"{now.strftime('%Y-%m-%d')}-loss-curve.png")
+        plt.close()
+    
+    if save_model:
+        torch.save(model.state_dict(), f"{now.strftime('%Y-%m-%d')}-DL-weights.pt")
+    
+    metrics = {
+        **output,
+        "test_mse": test_mse,
+    }
+    
+    return model, metrics
+
+
 if __name__ == "__main__":
-    # Check if CUDA is compiled AND available
-    try:
-        if torch.cuda.is_available():
-            device = "cuda"
-        else:
-            device = "cpu"
-            print("CUDA is not available, using CPU")
-    except (AssertionError, AttributeError):
-        # torch not compiled with CUDA support
-        device = "cpu"
-        print("Torch not compiled with CUDA, using CPU")
-
-    run(device=device, data_path="sp500-stocks.csv")
-    
+    model, metrics =run_trainer(data_path="sp500-stocks.csv")
+    print(metrics)
 
 
