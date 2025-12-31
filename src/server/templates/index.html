@@ -6,6 +6,14 @@
         <link rel="stylesheet" href="{{ url_for('static', filename='style.css')}}">
     </head>
     <body>
+        <header>
+            <nav>
+                <a href="{{ url_for('home') }}">Home</a> |
+                <a href="{{ url_for('profile', username='guest_user') }}"> My Profile</a> |
+                <a href="{{ url_for('predict_home')}}">Stock Price Forecaster</a>
+            </nav>
+        </header>
+
         <h1>Flask is running</h1>
         <button id="magicButton">Ask python for the time!</button>
         <p id="responseArea"></p>
@@ -14,8 +22,20 @@
         <h1>Personal Greeting</h1>
         <input type="text" id="userName" placeholder="enter name here">
         <button id="greetButton">Send to Python</button>
-        <p id="greetingResponse"></p>        
-        <script src="{{ url_for('static', filename='script.js')}}"></script>
+        <p id="greetingResponse"></p>   
         
+        <br>
+        <h3>TestButton</h3>
+        <button id="testButton"> Test </button>
+
+        <hr>
+        <h3>Activities (Rendered by Python)!</h3>
+        <ul>
+            {% for task in tasks %}
+                <li>{{ task }}</li>
+            {% endfor %}
+        </ul>
+
+        <script src="{{ url_for('static', filename='script.js')}}"></script>
     </body>
 </html>

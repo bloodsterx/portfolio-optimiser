@@ -1,8 +1,16 @@
 import torch
+import os
 from pathlib import Path
 
 from ..training.model import MLPModel
 from ..data.data import DataExtractor, DataProcessor
+
+
+
+# def which_models(model_path="models/"):
+#     for file in os.listdir(model_path):
+        
+
 
 
 def predict(model_path: str, ticker: str, tickers_list: list[str] = None, period: str = "5y", interval: str = "1mo"):

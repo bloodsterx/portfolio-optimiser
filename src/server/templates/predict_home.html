@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Predictor</title>
+        <link rel="stylesheet" href="{{ url_for('static', filename="style.css")}}">
+    </head>
+    <body>
+        <header>
+            <h1>Stock Forecastor (foolproof way to lose all your money!)</h1>
+        </header>
+
+        <!-- <button id="testButtonPredict">Predict!</button> -->
+        <br>
+        <div id="container">
+            <input type="text" id="stockTicker" placeholder="e.g. AAPL">
+            <button id="predictButton">Predict!</button>
+            <p id="stockForecastResponse"></p>
+            <!-- TODO: Display a graph of the stocks performance for the next 3 months-->
+        </div>
+        <script src="{{ url_for('static', filename='script.js') }}"></script>
+    </body>
+</html>
