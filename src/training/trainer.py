@@ -1,41 +1,48 @@
 from datetime import datetime
+from torch.utils.data import DataLoader
+from matplotlib import pyplot as plt
 import torch.nn as nn
 import torch
 import numpy as np
-from torch.utils.data import DataLoader
-from matplotlib import pyplot as plt
-
+import os
+import json
 from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset, DataProcessor
 
+SAVE_DIR = "models"
+
 class Log:
     def __init__(
-        self, 
+        self,
+        date,
         in_features, 
-        data_periods, 
+        data_period,
+        interval, 
         hyperparams,
         test_loss,
-        log_dir="logs"
+        feature_configs,
     ):
-        self.date = datetime.now().strftime("%Y-%m-%d")
-        self.log_dir = log_dir
+        self.date = date
         self.in_features = in_features
-        self.data_periods = data_periods
+        self.data_period = data_period
+        self.interval = interval
         self.hyperparams = hyperparams # batch size, n_epochs, lr, etc
         self.test_loss = test_loss
+        self.feature_configs = feature_configs
 
-        assert self.hyperparams["batch_size"] is not None
-        assert self.hyperparams["n_epochs"] is not None
-        assert self.hyperparams["lr"] is not None
 
-    def save_log(self):
-        log_file = f"{self.log_dir}/{self.date}.txt"
-        with open(log_file, "w") as f:
-            f.write(f"date: {self.date}\n")
-            f.write(f"in_features: {self.in_features}\n")
-            f.write(f"data_periods: {self.data_periods}\n")
-            f.write(f"hyperparams: {self.hyperparams}\n")
-            f.write(f"test_loss: {self.test_loss}\n")
+    def save_log(self, save_dir):
+        log_dict = {
+            f"date": self.date,
+            f"data_period": self.data_period,
+            f"interval": self.interval,
+            f"in_features": self.in_features,
+            f"hyperparams": self.hyperparams,
+            f"test_loss": self.test_loss,
+            f"feature_configs": self.feature_configs,
+        }
+        with open(os.path.join(save_dir, "log.json"), "w") as f:
+            json.dump(obj=log_dict, fp=f, indent=4)
 
 class Trainer:
     
@@ -112,7 +119,8 @@ class Trainer:
             self.model.eval()
             val_loss = 0.0
             n_val_samples = 0
-
+            min_val_loss = float('inf')
+            best_model_weights = self.model.state_dict()
             # validation 
             with torch.inference_mode():
                 for X_batch, Y_batch in val_dataloader:
@@ -125,7 +133,9 @@ class Trainer:
                     val_loss += loss.item() * X_batch.size(0)
                     n_val_samples += X_batch.size(0)
 
-
+                    if val_loss < min_val_loss:
+                        best_model_weights = self.model.state_dict()
+                        min_val_loss = val_loss
 
             avg_val_loss = val_loss / n_val_samples
 
@@ -147,6 +157,7 @@ class Trainer:
             "val_losses": val_losses,
             "avg_train_losses": avg_train_losses,
             "avg_val_losses": avg_val_losses,
+            "best_model_weights": best_model_weights # state dict producing the smallest validation loss
         }
 
         return self.model, output
@@ -210,15 +221,7 @@ def prepare_data(
     Returns:
         (train_loader, val_loader, X_test_tensor, Y_test_tensor, n_assets)
     """
-    # Default features - TODO: add dynamic feature code (config file input, not hardcoded)
-    if feature_configs is None:
-        feature_configs = [
-            {'type': 'momentum', 'window': 1},
-            {'type': 'momentum', 'window': 12},
-            {'type': 'volatility', 'window': 3},
-            {'type': 'volatility', 'window': 12},
-        ]
-    
+
     extractor = DataExtractor()
     if data_path and not tickers:
         extractor.extract_csv(data_path)
@@ -259,7 +262,6 @@ def prepare_data(
     
     return train_loader, val_loader, X_test_t, Y_test_t, len(asset_cols)
 
-
 def run_trainer(
     data_path: str = None,
     tickers: list[str] = None,
@@ -274,6 +276,15 @@ def run_trainer(
     save_plot: bool = True,
     save_model: bool = True,
 ) -> tuple[nn.Module, dict]:
+
+    # Default features - TODO: add dynamic feature code (config file input, not hardcoded)
+    if feature_configs is None:
+        feature_configs = [
+            {'type': 'momentum', 'window': 1},
+            {'type': 'momentum', 'window': 12},
+            {'type': 'volatility', 'window': 3},
+            {'type': 'volatility', 'window': 12},
+        ]
 
     # Prepare data: data loaders, timeseries tensors of features (X_test_t) and returns (Y_test_t)
     train_loader, val_loader, X_test_t, Y_test_t, n_assets = prepare_data(
@@ -312,7 +323,14 @@ def run_trainer(
     print(f"Test MSE: {test_mse:.6f}")
     
     # Save artifacts
-    now = datetime.now()
+    now = datetime.now().strftime("%F_%H:%M:%S")
+    train_out_dir = os.path.join(SAVE_DIR, now)
+
+    try:
+        os.makedirs(train_out_dir, exist_ok=False)
+    except OSError:
+        print(f"Directory(s) already exists in {train_out_dir}")
+        breakpoint()
     
     if save_plot:
         plt.figure(figsize=(12, 6))
@@ -322,22 +340,43 @@ def run_trainer(
         plt.ylabel("Loss")
         plt.xlabel("Epoch")
         plt.legend()
-        plt.savefig(f"{now.strftime('%Y-%m-%d')}-loss-curve.png")
+        plt.savefig(os.path.join(train_out_dir, f"loss-curve.png"))
         plt.close()
     
     if save_model:
-        torch.save(model.state_dict(), f"{now.strftime('%Y-%m-%d')}-DL-weights.pt")
+        torch.save(model.state_dict(), os.path.join(train_out_dir, f"weights.pt"))
     
     metrics = {
         **output,
         "test_mse": test_mse,
     }
+
+    hyperparams = {
+        "batch_size": 32,
+        "n_epochs": n_epochs,
+        "lr": lr,
+        "optim": optim,
+        "hidden_layers": hidden_layers,
+        "device": device,
+    }
+
+    Log(
+        now,
+        n_features, 
+        data_period, 
+        interval,
+        hyperparams,
+        test_mse,
+        feature_configs
+    ).save_log(train_out_dir)
+    # save in models, models/{model_(date)}*/{model_(date).pt, model_(date).yaml, plot.png}*
     
     return model, metrics
 
 
 if __name__ == "__main__":
-    model, metrics =run_trainer(data_path="sp500-stocks.csv")
+    model, metrics = run_trainer(data_path="sp500-stocks.csv", n_epochs=10000, lr=0.01, data_period="10y")
+    breakpoint()
     print(metrics)
 
 
