@@ -234,6 +234,8 @@ def prepare_data(
     # Data pre-processing & cleaning
     processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
     processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window=13)
+
+    breakpoint()
     
     asset_cols = processor.get_asset_columns()
     print(f"Kept {len(asset_cols)} assets after filtering")
@@ -374,8 +376,173 @@ def run_trainer(
     return model, metrics
 
 
+def run_trainer_flexible(
+    data_path: str = None,
+    tickers: list[str] = None,
+    data_period: str = "5y",
+    interval: str = "1mo",
+    feature_configs: list[dict] = None,
+    hidden_layers: tuple[int, ...] = (32, 16),
+    n_epochs: int = 500,
+    lr: float = 1e-3,
+    optim: str = "adam",
+    device: str = get_device(),
+    save_plot: bool = True,
+    save_model: bool = True,
+) -> tuple[nn.Module, dict]:
+    """
+    Train a flexible model that can predict returns for ANY stock.
+    
+    This uses stacked data format where each sample is one asset at one time,
+    allowing the model to learn patterns that generalize across assets.
+    
+    Args:
+        Same as run_trainer(), but uses FlexibleMLPModel instead of MLPModel
+    
+    Returns:
+        (model, metrics) where model can predict any stock
+    """
+    from .model import FlexibleMLPModel
+    
+    # Default features
+    if feature_configs is None:
+        feature_configs = [
+            {'type': 'momentum', 'window': 1},
+            {'type': 'momentum', 'window': 12},
+            {'type': 'volatility', 'window': 3},
+            {'type': 'volatility', 'window': 12},
+        ]
+    
+    # Prepare data (same as before)
+    extractor = DataExtractor()
+    if data_path and not tickers:
+        extractor.extract_csv(data_path)
+    elif tickers:
+        extractor.tickers = tickers
+    else:
+        raise ValueError("Must provide either data_path or tickers")
+    
+    timeseries = extractor.extract_yfinance(period=data_period, interval=interval)
+    print(f"Loaded {len(extractor.tickers)} tickers")
+    
+    # Process data
+    processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
+    max_window = max([item["window"] for item in feature_configs])
+    processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window)
+    
+    asset_cols = processor.get_asset_columns()
+    print(f"Kept {len(asset_cols)} assets after filtering")
+    
+    # KEY DIFFERENCE: Use stacked format
+    X, Y, metadata = processor.get_features_and_returns_stacked()
+    n_features_per_asset = metadata['n_features_per_asset']
+    
+    print(f"\nStacked data shape:")
+    print(f"  X: {X.shape} - each row is one asset at one time")
+    print(f"  Y: {Y.shape} - predicted return for each")
+    print(f"  Features per asset: {n_features_per_asset}")
+    print(f"  Total samples: {X.shape[0]} = {metadata['n_times']} times × {metadata['n_assets']} assets")
+    
+    # Split data (same time-based split)
+    X_train, X_val, X_test = split_train_data(X, 0.7)
+    Y_train, Y_val, Y_test = split_train_data(Y, 0.7)
+    
+    print(f"\nTrain: X={X_train.shape}, Y={Y_train.shape}")
+    print(f"Val:   X={X_val.shape}, Y={Y_val.shape}")
+    print(f"Test:  X={X_test.shape}, Y={Y_test.shape}")
+    
+    # Convert to tensors
+    X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
+    Y_train_t = torch.tensor(Y_train, dtype=torch.float32).to(device)
+    X_val_t = torch.tensor(X_val, dtype=torch.float32).to(device)
+    Y_val_t = torch.tensor(Y_val, dtype=torch.float32).to(device)
+    X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+    Y_test_t = torch.tensor(Y_test, dtype=torch.float32).to(device)
+    
+    # Create dataloaders (larger batch size since we have more samples)
+    train_loader = DataLoader(CostDataset(X_train_t, Y_train_t), batch_size=256, shuffle=True)
+    val_loader = DataLoader(CostDataset(X_val_t, Y_val_t), batch_size=256, shuffle=False)
+    
+    # KEY DIFFERENCE: Use FlexibleMLPModel with n_features_per_asset input
+    model = FlexibleMLPModel(n_features_per_asset, *hidden_layers)
+    print(f"\nModel architecture: {n_features_per_asset} inputs → {hidden_layers} → 1 output")
+    
+    # Train (same as before)
+    trainer = Trainer(model, device=device)
+    model, output = trainer.train(
+        train_loader,
+        val_loader,
+        n_epochs=n_epochs,
+        lr=lr,
+        optim=optim
+    )
+    
+    # Evaluate on test set
+    model.eval()
+    loss_fn = torch.nn.MSELoss()
+    with torch.inference_mode():
+        Y_hat = model(X_test_t)
+        test_mse = loss_fn(Y_hat, Y_test_t).item()
+    
+    print(f"\nTest MSE: {test_mse:.6f}")
+    
+    # Save artifacts
+    now = datetime.now().strftime("%F_%H:%M:%S")
+    train_out_dir = os.path.join(SAVE_DIR, f"flexible_{now}")
+    
+    try:
+        os.makedirs(train_out_dir, exist_ok=False)
+    except OSError:
+        print(f"Directory already exists: {train_out_dir}")
+    
+    if save_plot:
+        plt.figure(figsize=(12, 6))
+        plt.plot(output["epochs"], output["avg_val_losses"], label="val_loss")
+        plt.plot(output["epochs"], output["avg_train_losses"], label="train_loss")
+        plt.title("Train & Val Loss (Flexible Model)")
+        plt.ylabel("Loss")
+        plt.xlabel("Epoch")
+        plt.legend()
+        plt.savefig(os.path.join(train_out_dir, "loss-curve.png"))
+        plt.close()
+    
+    if save_model:
+        torch.save(model.state_dict(), os.path.join(train_out_dir, "weights.pt"))
+    
+    metrics = {
+        **output,
+        "test_mse": test_mse,
+    }
+    
+    hyperparams = {
+        "batch_size": 256,
+        "n_epochs": n_epochs,
+        "lr": lr,
+        "optim": optim,
+        "hidden_layers": hidden_layers,
+        "device": device,
+        "model_type": "flexible",  # Mark as flexible model
+    }
+    
+    # Save log
+    Log(
+        now,
+        n_features_per_asset,  # Not total features, but per-asset
+        data_period,
+        interval,
+        hyperparams,
+        test_mse,
+        feature_configs
+    ).save_log(train_out_dir)
+    
+    print(f"\nModel saved to: {train_out_dir}")
+    print(f"This model can now predict returns for ANY stock with {n_features_per_asset} features!")
+    
+    return model, metrics
+
+
 if __name__ == "__main__":
-    model, metrics = run_trainer(data_path="sp500-stocks.csv", n_epochs=10000, lr=0.01, data_period="10y")
+    model, metrics = run_trainer_flexible(data_path="sp500-stocks.csv", n_epochs=500, lr=0.01, data_period="10y")
     breakpoint()
     print(metrics)
 

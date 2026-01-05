@@ -294,7 +294,7 @@ class DataProcessor:
     
     def get_features_and_returns(self):
         """
-        Get feature matrix (X) and returns matrix (Y).
+        Get feature matrix (X) and returns matrix (Y) in wide format.
         
         Returns:
             tuple: (X, Y) as numpy arrays
@@ -308,6 +308,94 @@ class DataProcessor:
         Y = self.combined.select(self.asset_cols).to_numpy()
         
         return X, Y
+    
+    def get_features_and_returns_stacked(self):
+        """
+        Get data in per-asset format for flexible model training.
+        
+        Each row represents one asset at one time point, enabling the model
+        to learn patterns that generalize across all assets.
+        
+        Returns:
+            tuple: (X_stacked, Y_stacked, metadata) where:
+                X_stacked: numpy array of shape (T × n_assets, n_features_per_asset)
+                          Each row is features for one asset at one time
+                Y_stacked: numpy array of shape (T × n_assets, 1)
+                          Each row is the return for one asset at one time
+                metadata: dict containing:
+                    - 'asset_names': array of asset names (repeated for each time)
+                    - 'dates': array of dates (repeated for each asset)
+                    - 'asset_indices': which asset (0 to n_assets-1)
+                    - 'time_indices': which time period (0 to T-1)
+                    - 'n_assets': number of unique assets
+                    - 'n_times': number of time periods
+                    - 'n_features_per_asset': features per asset
+        
+        Example:
+            If you have 3 stocks (AAPL, MSFT, GOOGL) over 2 months:
+            
+            Wide format:
+            X: [[AAPL_f1, AAPL_f2, MSFT_f1, MSFT_f2, GOOGL_f1, GOOGL_f2],  # Jan
+                [AAPL_f1, AAPL_f2, MSFT_f1, MSFT_f2, GOOGL_f1, GOOGL_f2]]  # Feb
+            Y: [[AAPL_r, MSFT_r, GOOGL_r],  # Jan
+                [AAPL_r, MSFT_r, GOOGL_r]]  # Feb
+            
+            Stacked format:
+            X: [[AAPL_f1, AAPL_f2],   # Jan, AAPL
+                [MSFT_f1, MSFT_f2],   # Jan, MSFT
+                [GOOGL_f1, GOOGL_f2], # Jan, GOOGL
+                [AAPL_f1, AAPL_f2],   # Feb, AAPL
+                [MSFT_f1, MSFT_f2],   # Feb, MSFT
+                [GOOGL_f1, GOOGL_f2]] # Feb, GOOGL
+            Y: [[AAPL_r], [MSFT_r], [GOOGL_r], [AAPL_r], [MSFT_r], [GOOGL_r]]
+        """
+        if not self._is_finalized:
+            raise ValueError("Must call finalize() before extracting features")
+        
+        # Get data in wide format
+        X_wide = self.combined.select(self.feature_cols).to_numpy()
+        Y_wide = self.combined.select(self.asset_cols).to_numpy()
+        dates = self.combined.select(self.date_col).to_numpy().flatten()
+        
+        T, n_assets = Y_wide.shape  # T time periods, n_assets stocks
+        n_feature_cols = len(self.feature_cols)
+        n_features_per_asset = n_feature_cols // n_assets
+        
+        # Validate that features divide evenly by assets
+        if n_feature_cols % n_assets != 0:
+            raise ValueError(
+                f"Feature columns ({n_feature_cols}) don't divide evenly by assets ({n_assets}). "
+                f"Expected {n_assets} * {n_features_per_asset} = {n_feature_cols}"
+            )
+        
+        # Reshape X from (T, n_assets * n_features_per_asset) to (T * n_assets, n_features_per_asset)
+        # Step 1: Reshape to (T, n_assets, n_features_per_asset)
+        X_reshaped = X_wide.reshape(T, n_assets, n_features_per_asset)
+        
+        # Step 2: Reshape to (T * n_assets, n_features_per_asset)
+        X_stacked = X_reshaped.reshape(T * n_assets, n_features_per_asset)
+        
+        # Reshape Y from (T, n_assets) to (T * n_assets, 1)
+        Y_stacked = Y_wide.reshape(T * n_assets, 1)
+        
+        # Create metadata for tracking which sample corresponds to which asset/time
+        import numpy as np
+        
+        # For each time period, list all assets
+        asset_names_repeated = np.tile(self.asset_cols, T)  # [A,B,C, A,B,C, ...]
+        dates_repeated = np.repeat(dates, n_assets)         # [t1,t1,t1, t2,t2,t2, ...]
+        
+        metadata = {
+            'asset_names': asset_names_repeated,
+            'dates': dates_repeated,
+            'asset_indices': np.tile(np.arange(n_assets), T),  # [0,1,2, 0,1,2, ...]
+            'time_indices': np.repeat(np.arange(T), n_assets), # [0,0,0, 1,1,1, ...]
+            'n_assets': n_assets,
+            'n_times': T,
+            'n_features_per_asset': n_features_per_asset,
+        }
+        
+        return X_stacked, Y_stacked, metadata
     
     def get_dates(self):
         """Get date column as numpy array."""

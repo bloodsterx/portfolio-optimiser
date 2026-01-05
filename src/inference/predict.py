@@ -1,129 +1,133 @@
 import torch
 import os
-from pathlib import Path
+import json
+import numpy as np
 
-from ..training.model import MLPModel
+from ..training.model import FlexibleMLPModel
 from ..data.data import DataExtractor, DataProcessor
 
 
-
-# def which_models(model_path="models/"):
-#     for file in os.listdir(model_path):
-        
-
-
-
-def predict(model_path: str, ticker: str, tickers_list: list[str] = None, period: str = "5y", interval: str = "1mo"):
+def predict(ticker, model_path, return_features=False):
     """
-    Run inference on a pre-trained model to forecast future returns for a specific ticker.
+    Predict next period return for ANY ticker using flexible model.
+    
+    Works for any stock, even those not in the training set!
     
     Args:
-        model_path (str): Path to the saved model state dict (.pt file)
-        ticker (str): Stock ticker symbol to predict returns for
-        tickers_list (list[str], optional): List of all tickers the model was trained on. 
-                                           If None, will attempt to load from default CSV.
-        period (str): Historical data period for feature calculation (default: "5y")
-        interval (str): Data interval (default: "1mo")
+        ticker: Stock ticker symbol (e.g., 'AAPL', 'TSLA')
+        model_path: Path to trained flexible model
+        return_features: If True, also return the feature vector
     
     Returns:
-        dict: Contains predicted return for the ticker and metadata
-            {
-                'ticker': str,
-                'predicted_return': float,
-                'feature_date': str (date of latest features used)
-            }
+        dict with prediction, date, and metadata
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Load model config
+    log_path = os.path.join(model_path, "log.json")
+    if not os.path.exists(log_path):
+        raise FileNotFoundError(f"Model log not found: {log_path}")
     
-    # Step 1: Load tickers list (same as training)
-    if tickers_list is None:
-        # Try to load from default CSV
-        csv_path = Path(__file__).parent.parent.parent / "sp500-stocks.csv"
-        if csv_path.exists():
-            extractor = DataExtractor()
-            tickers_list = extractor.extract_csv(str(csv_path))
-        else:
-            raise ValueError("No tickers_list provided and default CSV not found. "
-                           "Please provide tickers_list parameter.")
+    with open(log_path, "r") as fp:
+        log = json.load(fp)
     
-    # Validate that requested ticker is in the training set
-    if ticker not in tickers_list:
-        raise ValueError(f"Ticker '{ticker}' not found in the model's training set. "
-                        f"Available tickers: {tickers_list}")
+    data_period = log["data_period"]
+    interval = log["interval"]
+    feature_configs = log["feature_configs"]
+    in_features = log["in_features"]  # n_features_per_asset
+    hidden_layers = tuple(log["hyperparams"]["hidden_layers"])
+    max_window = max([item["window"] for item in feature_configs])
     
-    # Step 2: Extract data for all tickers (model needs features for all assets)
-    extractor = DataExtractor(tickers=tickers_list)
-    timeseries = extractor.extract_yfinance(period=period, interval=interval)
+    print(f"Loading model: {model_path}")
+    print(f"  Data period: {data_period}, Interval: {interval}")
+    print(f"  Features per asset: {in_features}")
     
-    # Step 3: Process data using DataProcessor
+    # Extract and process data for this ticker
+    extractor = DataExtractor([ticker])
+    timeseries = extractor.extract_yfinance(period=data_period, interval=interval)
+    
+    if timeseries is None or timeseries.empty:
+        raise ValueError(f"No data extracted for {ticker}")
+    
+    # Process data
     processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
+    processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window)
     
-    # Define feature configuration (same as training)
-    feature_configs = [
-        {'type': 'momentum', 'window': 1},
-        {'type': 'momentum', 'window': 12},
-        {'type': 'volatility', 'window': 3},
-        {'type': 'volatility', 'window': 12},
-    ]
-    
-    # Process data through the pipeline
-    processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window=13)
-    
-    # Get the most recent observation for prediction
+    # Get latest features
     latest_features, latest_date = processor.get_latest_features()
-    asset_cols = processor.get_asset_columns()
     
-    # Step 5: Load model architecture and weights
-    n_features = latest_features.shape[1]
-    n_assets = len(asset_cols)
+    # For single asset, features are already in correct shape: (1, n_features_per_asset)
+    if latest_features.shape[1] != in_features:
+        raise ValueError(
+            f"Feature mismatch! Model expects {in_features} features, "
+            f"got {latest_features.shape[1]}"
+        )
     
-    # Initialize model (assume default architecture - no hidden layers specified)
-    model = MLPModel(n_features, n_assets)
+    # Load model
+    model = FlexibleMLPModel(in_features, *hidden_layers)
+    weights_path = os.path.join(model_path, "weights.pt")
     
-    # Load trained weights
-    state_dict = torch.load(model_path, map_location=device)
-    model.load_state_dict(state_dict)
-    model.to(device)
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"Model weights not found: {weights_path}")
+    
+    model.load_state_dict(torch.load(weights_path, map_location='cpu'))
     model.eval()
     
-    # Step 6: Run inference
-    X_latest = torch.tensor(latest_features, dtype=torch.float32).to(device)
+    # Predict
+    X_input = torch.tensor(latest_features, dtype=torch.float32)
     
     with torch.inference_mode():
-        predictions = model(X_latest)
-    
-    # Step 7: Extract prediction for the requested ticker
-    ticker_idx = asset_cols.index(ticker)
-    predicted_return = predictions[0, ticker_idx].item()
+        prediction = model(X_input)
     
     result = {
         'ticker': ticker,
-        'predicted_return': predicted_return,
-        'feature_date': str(latest_date),
-        'all_predictions': {asset_cols[i]: predictions[0, i].item() 
-                           for i in range(len(asset_cols))}
+        'prediction': float(prediction.item()),
+        'latest_date': str(latest_date),
+        'interval': interval,
+        'model_path': model_path,
     }
+    
+    if return_features:
+        result['features'] = latest_features.tolist()
+    
+    print(f"\n{ticker} prediction:")
+    print(f"  Latest data: {latest_date}")
+    print(f"  Predicted return: {result['prediction']:.4f} ({result['prediction']*100:.2f}%)")
     
     return result
 
 
-if __name__ == "__main__":
-    # Example usage
-    model_path = "2024-12-28-DL-weights.pt"  # Replace with your actual model path
-    ticker = "AAPL"
+def predict_multiple(tickers, model_path, verbose=True):
+    """
+    Predict returns for multiple tickers.
     
-    try:
-        result = predict(model_path, ticker)
-        print(f"\n{'='*50}")
-        print(f"Prediction for {result['ticker']}")
-        print(f"{'='*50}")
-        print(f"Predicted Return: {result['predicted_return']:.4%}")
-        print(f"Feature Date: {result['feature_date']}")
-        print(f"\nTop 5 Predicted Returns (All Assets):")
-        sorted_predictions = sorted(result['all_predictions'].items(), 
-                                   key=lambda x: x[1], reverse=True)
-        for ticker_name, ret in sorted_predictions[:5]:
-            print(f"  {ticker_name}: {ret:.4%}")
-    except Exception as e:
-        print(f"Error: {e}")
+    Args:
+        tickers: List of ticker symbols
+        model_path: Path to trained flexible model
+        verbose: Print progress
     
+    Returns:
+        dict with predictions for all tickers
+    """
+    results = {}
+    successful = 0
+    failed = 0
+    
+    for i, ticker in enumerate(tickers, 1):
+        if verbose:
+            print(f"\n[{i}/{len(tickers)}] Processing {ticker}...")
+        
+        try:
+            result = predict(ticker, model_path, return_features=False)
+            results[ticker] = result
+            successful += 1
+        except Exception as e:
+            if verbose:
+                print(f"  ❌ Failed: {e}")
+            results[ticker] = {'error': str(e)}
+            failed += 1
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Summary: {successful} successful, {failed} failed")
+    
+    return results
+
