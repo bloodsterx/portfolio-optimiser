@@ -40,28 +40,27 @@ def predict(ticker, model_path, return_features=False):
     print(f"  Data period: {data_period}, Interval: {interval}")
     print(f"  Features per asset: {in_features}")
     
-    # Extract and process data for this ticker
+    # pre-process, extract features 
+    # pre-process, extract features 
     extractor = DataExtractor([ticker])
     timeseries = extractor.extract_yfinance(period=data_period, interval=interval)
     
     if timeseries is None or timeseries.empty:
         raise ValueError(f"No data extracted for {ticker}")
     
-    # Process data
     processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)
     processor.clean_data().compute_returns().add_features(feature_configs).finalize(max_window)
     
-    # Get latest features
     latest_features, latest_date = processor.get_latest_features()
     
-    # For single asset, features are already in correct shape: (1, n_features_per_asset)
+    # for single asset, features should already in correct shape: (1, n_features_per_asset)
+    # for single asset, features should already in correct shape: (1, n_features_per_asset)
     if latest_features.shape[1] != in_features:
         raise ValueError(
             f"Feature mismatch! Model expects {in_features} features, "
             f"got {latest_features.shape[1]}"
         )
     
-    # Load model
     model = FlexibleMLPModel(in_features, *hidden_layers)
     weights_path = os.path.join(model_path, "weights.pt")
     
@@ -130,4 +129,5 @@ def predict_multiple(tickers, model_path, verbose=True):
         print(f"Summary: {successful} successful, {failed} failed")
     
     return results
+
 

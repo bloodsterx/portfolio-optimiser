@@ -230,6 +230,8 @@ def prepare_data(
         
     timeseries = extractor.extract_yfinance(period=data_period, interval=interval)
     print(f"Loaded {len(extractor.tickers)} tickers: {extractor.tickers[:10]}...")
+
+    timeseries.to_csv("stocks-cached.csv")
     
     # Data pre-processing & cleaning
     processor = DataProcessor(timeseries, date_col="Date", null_threshold=0.1)

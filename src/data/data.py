@@ -353,6 +353,7 @@ class DataProcessor:
             raise ValueError("Must call finalize() before extracting features")
         
         # Get data in wide format
+        print(self.combined.shape, "="*50, "\n", self.combined)
         X_wide = self.combined.select(self.feature_cols).to_numpy()
         Y_wide = self.combined.select(self.asset_cols).to_numpy()
         dates = self.combined.select(self.date_col).to_numpy().flatten()
@@ -368,20 +369,19 @@ class DataProcessor:
                 f"Expected {n_assets} * {n_features_per_asset} = {n_feature_cols}"
             )
         
-        # Reshape X from (T, n_assets * n_features_per_asset) to (T * n_assets, n_features_per_asset)
-        # Step 1: Reshape to (T, n_assets, n_features_per_asset)
-        X_reshaped = X_wide.reshape(T, n_assets, n_features_per_asset)
-        
-        # Step 2: Reshape to (T * n_assets, n_features_per_asset)
-        X_stacked = X_reshaped.reshape(T * n_assets, n_features_per_asset)
-        
-        # Reshape Y from (T, n_assets) to (T * n_assets, 1)
+        # Reshape to be one asset per row
+        X_stacked = X_wide.reshape(T, n_assets, n_features_per_asset).reshape(
+            T * n_assets, n_features_per_asset)
+
         Y_stacked = Y_wide.reshape(T * n_assets, 1)
-        
+
+
         # Create metadata for tracking which sample corresponds to which asset/time
         import numpy as np
         
         # For each time period, list all assets
+
+        # TO LEARN: what does this do?
         asset_names_repeated = np.tile(self.asset_cols, T)  # [A,B,C, A,B,C, ...]
         dates_repeated = np.repeat(dates, n_assets)         # [t1,t1,t1, t2,t2,t2, ...]
         
