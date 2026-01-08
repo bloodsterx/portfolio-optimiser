@@ -391,6 +391,7 @@ def run_trainer_flexible(
     device: str = get_device(),
     save_plot: bool = True,
     save_model: bool = True,
+    split: float = 0.7
 ) -> tuple[nn.Module, dict]:
     """
     Train a flexible model that can predict returns for ANY stock.
@@ -446,8 +447,8 @@ def run_trainer_flexible(
     print(f"  Total samples: {X.shape[0]} = {metadata['n_times']} times × {metadata['n_assets']} assets")
     
     # Split data (same time-based split)
-    X_train, X_val, X_test = split_train_data(X, 0.7)
-    Y_train, Y_val, Y_test = split_train_data(Y, 0.7)
+    X_train, X_val, X_test = split_train_data(X, split)
+    Y_train, Y_val, Y_test = split_train_data(Y, split)
     
     print(f"\nTrain: X={X_train.shape}, Y={Y_train.shape}")
     print(f"Val:   X={X_val.shape}, Y={Y_val.shape}")
@@ -523,6 +524,7 @@ def run_trainer_flexible(
         "optim": optim,
         "hidden_layers": hidden_layers,
         "device": device,
+        "train_split": split,
         "model_type": "flexible",  # Mark as flexible model
     }
     
