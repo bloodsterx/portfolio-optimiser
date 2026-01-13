@@ -4,6 +4,8 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+LATEST = "models/flexible_2026-01-08_08:47:28" # TODO: unhardcode
+
 @app.route("/")
 def home():
     my_tasks = ["Stock Prediction", "Portfolio Optimisation", "Black-Litterman Portfolio"]
@@ -45,12 +47,14 @@ def get_prediction():
 
     print(f"User requesting a stock prediction of {data}")
     try:
-        forecast = predict("2025-12-29-DL-weights.pt", data)
+        forecast = predict(data["ticker"], LATEST)
     except Exception as e:
         print(e)
         raise e
 
-    return jsonify({ "forecast": forecast })
+    print(forecast)
+
+    return jsonify(forecast)
 
 @app.errorhandler(404)
 def page_not_found(e):

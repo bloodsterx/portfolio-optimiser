@@ -3,3 +3,17 @@ __pycache__
 .venv
 justfile
 .vscode
+
+# Model weights (large binary files)
+*.pt
+*.pth
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Backup files
+*.orig
+*.bak
+*.swp
+*~
