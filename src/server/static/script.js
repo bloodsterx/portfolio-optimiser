@@ -24,6 +24,7 @@ if (greetButton) {
         })
         .then(response => response.json())
         .then(data => {
+            console.log(data)
             document.getElementById("greetingResponse").innerText = data.greeting;
             console.log("Received Username Data Successfully!");
         });
@@ -44,22 +45,3 @@ if (testButtonPredict) {
     });
 }
 
-const predictButton = document.getElementById("predictButton");
-if (predictButton) {
-    predictButton.addEventListener("click", () => {
-        const ticker = document.getElementById("stockTicker").value;
-        console.log("yippe2");
-
-        fetch("/predict", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ ticker: ticker })
-        })
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById("stockForecastResponse").innerText = data.forecast;
-        });
-    });
-}
