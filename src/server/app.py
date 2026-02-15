@@ -1,10 +1,11 @@
 from flask import Flask, render_template, jsonify, request
 from ..inference.predict import predict
 from datetime import datetime
+import os
 
 app = Flask(__name__)
 
-LATEST = "models/flexible_2026-01-08_08:47:28" # TODO: unhardcode
+MODEL_DIR = "models" 
 
 @app.route("/")
 def home():
@@ -39,7 +40,12 @@ def profile(username):
 
 @app.route("/predict_home")
 def predict_home():
-    return render_template("predict_home.html")
+    try:
+        models = [model for model in os.listdir("models")]
+    except FileNotFoundError | OSError:
+        print("error in backend - missing models directory")
+
+    return render_template("predict_home.html", models=models)
 
 @app.route("/predict", methods=["POST"])
 def get_prediction():
@@ -47,7 +53,8 @@ def get_prediction():
 
     print(f"User requesting a stock prediction of {data}")
     try:
-        forecast = predict(data["ticker"], LATEST)
+        print(data)
+        forecast = predict(ticker=data["ticker"], model_path=os.path.join(MODEL_DIR,data["model"]))
     except Exception as e:
         print(e)
         raise e

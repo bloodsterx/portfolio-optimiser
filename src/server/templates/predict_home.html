@@ -3,7 +3,7 @@
 <html>
     <head>
         <title>Predictor</title>
-        <link rel="stylesheet" href="{{ url_for('static', filename="style.css")}}">
+        <link rel="stylesheet" href="{{ url_for('static', filename='style.css')}}">
     </head>
     <body>
         <header>
@@ -12,6 +12,18 @@
 
         <!-- <button id="testButtonPredict">Predict!</button> -->
         <br>
+        <div id="dropdown">
+            <form id="modelForm">
+                <label for="model-select">Choose Prediction Model</label>
+                <select name="models" id="model-select" required>
+                    <option value="" disabled selected>Select a Model</option>
+
+                    {% for model in models %}
+                        <option value="{{ model }}">{{ model }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+        </div>
         <div id="container">
             <input type="text" id="stockTicker" placeholder="e.g. AAPL">
             <button id="predictButton">Predict!</button>
