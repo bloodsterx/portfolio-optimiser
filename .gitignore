@@ -3,6 +3,7 @@ __pycache__
 .venv
 justfile
 .vscode
+models/*
 
 # Model weights (large binary files)
 *.pt
