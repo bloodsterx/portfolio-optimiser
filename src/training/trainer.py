@@ -327,7 +327,7 @@ def run_trainer(
     print(f"Test MSE: {test_mse:.6f}")
     
     # Save artifacts
-    now = datetime.now().strftime("%F_%H:%M:%S")
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
     train_out_dir = os.path.join(SAVE_DIR, now)
 
     try:
@@ -490,7 +490,7 @@ def run_trainer_flexible(
     print(f"\nTest MSE: {test_mse:.6f}")
     
     # Save artifacts
-    now = datetime.now().strftime("%F_%H:%M:%S")
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
     train_out_dir = os.path.join(SAVE_DIR, f"flexible_{now}")
     
     try:
