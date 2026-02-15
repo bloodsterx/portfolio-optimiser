@@ -63,12 +63,20 @@ def predict(ticker, model_path, return_features=False):
     
     model = FlexibleMLPModel(in_features, *hidden_layers)
     weights_path = os.path.join(model_path, "weights.pt")
+    scaler_path = os.path.join(model_path, "scaler.joblib")
     
     if not os.path.exists(weights_path):
         raise FileNotFoundError(f"Model weights not found: {weights_path}")
     
     model.load_state_dict(torch.load(weights_path, map_location='cpu'))
     model.eval()
+    
+    if os.path.exists(scaler_path):
+        import joblib
+        scaler = joblib.load(scaler_path)
+        latest_features = scaler.transform(latest_features)
+    else:
+        print(f"  Warning: No scaler found at {scaler_path}, using raw features")
     
     # Predict
     X_input = torch.tensor(latest_features, dtype=torch.float32)

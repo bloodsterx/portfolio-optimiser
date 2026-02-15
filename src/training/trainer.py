@@ -8,6 +8,7 @@ import os
 import json
 from .model import MLPModel
 from ..data.data import DataExtractor, CostDataset, DataProcessor
+from sklearn.preprocessing import StandardScaler
 
 SAVE_DIR = "models"
 
@@ -247,6 +248,11 @@ def prepare_data(
     X, Y = processor.get_features_and_returns()
     X_train, X_val, X_test = split_train_data(X, train_split)
     Y_train, Y_val, Y_test = split_train_data(Y, train_split)
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    X_test = scaler.transform(X_test)
     
     print(f"Train: X={X_train.shape}, Y={Y_train.shape}")
     print(f"Val: X={X_val.shape}, Y={Y_val.shape}")
@@ -454,6 +460,13 @@ def run_trainer_flexible(
     print(f"Val:   X={X_val.shape}, Y={Y_val.shape}")
     print(f"Test:  X={X_test.shape}, Y={Y_test.shape}")
     
+    # Standardize features (fit on train only, transform all)
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_val = scaler.transform(X_val)
+    X_test = scaler.transform(X_test)
+    print(f"\nFeatures standardized (mean={scaler.mean_.round(4)}, std={scaler.scale_.round(4)})")
+    
     # Convert to tensors
     X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
     Y_train_t = torch.tensor(Y_train, dtype=torch.float32).to(device)
@@ -487,7 +500,13 @@ def run_trainer_flexible(
         Y_hat = model(X_test_t)
         test_mse = loss_fn(Y_hat, Y_test_t).item()
     
-    print(f"\nTest MSE: {test_mse:.6f}")
+    # Baseline comparison: MSE if model predicted 0 for everything
+    baseline_mse = (Y_test ** 2).mean()
+    improvement = (baseline_mse - test_mse) / baseline_mse * 100
+    
+    print(f"\nBaseline MSE (predict 0): {baseline_mse:.6f}")
+    print(f"Model MSE:                {test_mse:.6f}")
+    print(f"Improvement over baseline: {improvement:.2f}%")
     
     # Save artifacts
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -511,10 +530,15 @@ def run_trainer_flexible(
     
     if save_model:
         torch.save(model.state_dict(), os.path.join(train_out_dir, "weights.pt"))
+        # ai's told me to use joblib over pickle
+        import joblib
+        joblib.dump(scaler, os.path.join(train_out_dir, "scaler.joblib"))
     
     metrics = {
         **output,
         "test_mse": test_mse,
+        "baseline_mse": float(baseline_mse),
+        "improvement_pct": float(improvement),
     }
     
     hyperparams = {
@@ -540,13 +564,14 @@ def run_trainer_flexible(
     ).save_log(train_out_dir)
     
     print(f"\nModel saved to: {train_out_dir}")
-    print(f"This model can now predict returns for ANY stock with {n_features_per_asset} features!")
+    print(f"  - weights.pt (model weights)")
+    print(f"  - scaler.joblib (feature scaler - required for inference)")
     
     return model, metrics
 
 
 if __name__ == "__main__":
-    model, metrics = run_trainer_flexible(data_path="sp500-stocks.csv", n_epochs=500, lr=0.01, data_period="10y")
+    model, metrics = run_trainer_flexible(data_path="sp500-stocks.csv", n_epochs=500, lr=0.001, data_period="10y")
     breakpoint()
     print(metrics)
 
